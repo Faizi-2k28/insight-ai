@@ -1,0 +1,109 @@
+# ============================================================
+# ROOT .gitignore — Insight AI
+# ============================================================
+
+# ---- Large / binary blobs -----------------------------------
+*.zip
+*.tar.gz
+*.tar.bz2
+*.rar
+*.7z
+
+# ---- Coverage & test artifacts ------------------------------
+.coverage
+coverage.xml
+htmlcov/
+artifacts/
+junit.xml
+
+# ---- OS / editor junk ---------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# ============================================================
+# BACKEND (Python / FastAPI)
+# ============================================================
+
+# Virtual environments
+backend/.venv/
+backend/.venv_check/
+backend/venv/
+
+# Python cache
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.py[cod]
+backend/.pytest_cache/
+backend/.python-version
+
+# Secrets & local env
+backend/.env
+backend/.env.*
+!backend/.env.example
+!backend/.env.neon.example
+
+# Logs
+backend/backend_logs*.txt
+
+# Uploaded / generated data (user datasets)
+backend/storage/datasets/
+backend/storage/
+
+# Build artefacts
+backend/artifacts/
+backend/dist/
+backend/build/
+backend/*.egg-info/
+
+# Alembic compiled
+backend/alembic/versions/__pycache__/
+
+# Misc debug / scratch scripts output
+backend/check_import.py
+backend/debug_app.py
+backend/debug_query.py
+backend/db_audit.py
+backend/check_db_triggers.py
+backend/seed_user.py
+backend/testing.py
+backend/test_api.py
+backend/test_db.py
+backend/test_db_creation.py
+
+# ============================================================
+# FRONTEND (Next.js)
+# ============================================================
+
+# Dependencies
+Frontend/node_modules/
+Frontend/.pnp
+Frontend/.pnp.*
+
+# Next.js build output
+Frontend/.next/
+Frontend/out/
+Frontend/build/
+
+# TypeScript build info
+Frontend/*.tsbuildinfo
+Frontend/next-env.d.ts
+
+# Env files
+Frontend/.env*
+
+# Debug logs
+Frontend/npm-debug.log*
+Frontend/yarn-debug.log*
+Frontend/yarn-error.log*
+Frontend/.pnpm-debug.log*
+Frontend/dev.log
+Frontend/compile_errors.txt
+Frontend/tsc_output.txt
+
+# Vercel
+Frontend/.vercel
