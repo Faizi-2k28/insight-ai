@@ -242,3 +242,48 @@ class QueryService:
             
         # Default
         return {"type": "table", "reason": "Best displayed as table"}
+
+    @staticmethod
+    def process_question(question: str, records: list, schema_info: dict) -> Dict[str, Any]:
+        """
+        Full NLP query orchestration: LLM → DSL → execute → chart suggestion.
+        Returns a standardized dict with dsl, sql, columns, rows, chart_suggestion, error.
+        """
+        from services.llm_service import LLMService
+
+        result = {
+            "dsl": None,
+            "generated_sql": None,
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "chart_suggestion": None,
+            "error": None
+        }
+
+        # 1. Generate DSL via LLM
+        dsl = LLMService.generate_query_dsl(question, schema_info)
+        if not dsl:
+            result["error"] = "Failed to interpret question or LLM unavailable."
+            return result
+
+        result["dsl"] = dsl.dict()
+
+        # 2. Execute DSL
+        try:
+            exec_result = QueryService.execute_dsl(records, dsl)
+            result["generated_sql"] = exec_result["executed_sql"]
+            result["columns"] = exec_result["columns"]
+            result["rows"] = exec_result["rows"]
+            result["row_count"] = len(exec_result["rows"])
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+
+        # 3. Chart suggestion
+        if result["rows"]:
+            result["chart_suggestion"] = QueryService.generate_chart_suggestion(
+                result["columns"], result["rows"]
+            )
+
+        return result

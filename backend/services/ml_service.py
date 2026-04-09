@@ -369,3 +369,71 @@ class MLService:
             import traceback
             traceback.print_exc()
             return None
+
+    @staticmethod
+    def sanitize_score(score, problem_type: str, *, allow_null: bool = True):
+        """
+        Sanitize a score for DB storage (must be in [0, 1]).
+        If allow_null is True, out-of-range values become None (for cv_score).
+        If allow_null is False, out-of-range values become 0.0 (for test_score).
+        """
+        if score is None:
+            return None if allow_null else 0.0
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            return None if allow_null else 0.0
+        if 0.0 <= value <= 1.0:
+            return value
+        return None if allow_null else 0.0
+
+    @staticmethod
+    def train_and_evaluate(df: pd.DataFrame, target_column: str, problem_type: str) -> Dict[str, Any]:
+        """
+        Full training orchestration: prepare data → select models → train → evaluate.
+        Returns a dict with 'results' list, 'best_result', and 'detected_type'.
+        Raises ValueError on preparation failures.
+        """
+        # 1. Prepare data
+        prep = MLService.prepare_data(df, target_column, problem_type)
+        if not prep["success"]:
+            raise ValueError(prep["error"])
+
+        X_train = prep["X_train"]
+        X_test = prep["X_test"]
+        y_train = prep["y_train"]
+        y_test = prep["y_test"]
+        feature_names = prep["feature_names"]
+
+        # 2. Select models
+        models = MLService.select_best_models(
+            n_samples=len(X_train),
+            n_features=X_train.shape[1],
+            problem_type=problem_type
+        )
+
+        # 3. Train each model
+        results = []
+        for model_name, model in models:
+            result = MLService.train_single_model(
+                model_name, model,
+                X_train, X_test,
+                y_train, y_test,
+                feature_names, problem_type
+            )
+            if result:
+                result["test_score_db"] = MLService.sanitize_score(
+                    result["test_score"], problem_type, allow_null=False
+                )
+                result["cv_score_db"] = MLService.sanitize_score(
+                    result["cv_score"], problem_type, allow_null=True
+                )
+                results.append(result)
+
+        best_result = max(results, key=lambda x: x["test_score"]) if results else None
+
+        return {
+            "results": results,
+            "best_result": best_result,
+            "detected_type": problem_type
+        }

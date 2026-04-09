@@ -35,9 +35,15 @@ def mock_dataset_service():
         }
         for i in range(50)
     ]
-    with patch("services.dataset_service.DatasetService.load_dataset") as mock:
-        mock.side_effect = lambda *a, **kw: data
-        yield mock
+    with patch("services.dataset_service.DatasetService.load_dataset") as mock_data, \
+         patch("services.insight_service.InsightService.generate_chart_insights") as mock_insights:
+        mock_data.side_effect = lambda *a, **kw: data
+        mock_insights.return_value = [
+            {"title": "Mock Insight 1", "category": "visualization", "description": "Desc 1"},
+            {"title": "Mock Insight 2", "category": "visualization", "description": "Desc 2"},
+            {"title": "Mock Insight 3", "category": "visualization", "description": "Desc 3"}
+        ]
+        yield mock_data
 
 
 def test_get_recommendations_default(test_db, mock_dataset_service):
@@ -75,3 +81,16 @@ def test_get_recommendations_insights(test_db, mock_dataset_service):
 def test_invalid_dashboard_id(test_db, mock_dataset_service):
     response = client.get(f"/api/analysis/recommendations/{uuid.uuid4()}")
     assert response.status_code == 404
+
+
+def test_generate_charts_and_insights(test_db, mock_dataset_service):
+    db, dashboard = test_db
+    response = client.post(f"/api/insights/charts/{dashboard.id}?num_charts=5")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert "insights" in data
+    assert "message" in data
+    # Note: insights actually contain chart insights.
+    # The charts endpoint generate_chart_insights returns a list of insights (one per chart).
+    assert len(data["insights"]) >= 3

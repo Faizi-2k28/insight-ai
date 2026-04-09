@@ -90,3 +90,36 @@ def override_auth(db_user):
     app.dependency_overrides[get_current_active_user] = lambda: db_user
     yield db_user
     app.dependency_overrides.pop(get_current_active_user, None)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def mock_genai():
+    """Globally mock Google Generative AI to prevent 429 Too Many Requests during tests."""
+    class MockResponse:
+        def __init__(self, text):
+            self.text = text
+
+    def mock_generate_content(*args, **kwargs):
+        # Determine the prompt text
+        prompt = args[0] if args else kwargs.get("contents", "")
+        prompt_lower = str(prompt).lower()
+        
+        import json
+        if "query dsl" in prompt_lower:
+            data = {"select": ["mock"], "filters": [], "groupby": [], "aggregations": [], "sort": [], "limit": 10}
+            return MockResponse(json.dumps(data))
+        elif "explain a visualization" in prompt_lower:
+            data = {"insight": "Mock insight", "key_finding": "Mock finding", "recommendation": "Mock recommendation"}
+            return MockResponse(json.dumps(data))
+        elif "enhance the insights" in prompt_lower:
+            data = [{"index": 0, "narrative": "Mock narrative", "actions": ["Mock action"], "risks": ["Mock risk"]}]
+            return MockResponse(json.dumps(data))
+        else:
+            data = [{"category": "data_quality", "priority": "high", "title": "Mock", "description": "Mock desc", "action": "Mock act"}]
+            return MockResponse(json.dumps(data))
+
+    from unittest.mock import patch
+    with patch('google.generativeai.GenerativeModel.generate_content', side_effect=mock_generate_content), \
+         patch('google.generativeai.configure'):
+        yield
+

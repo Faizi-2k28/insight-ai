@@ -12,13 +12,13 @@ from services.insight_service import InsightService
 from services.data_profiling_service import DataProfilingService
 from services.chart_service import ChartService
 
-router = APIRouter()
-profiling_service = DataProfilingService()
+router = APIRouter(prefix="/api/insights", tags=["Insights"])
 
 
 @router.post("/generate/{dashboard_id}")
 async def generate_insights(
     dashboard_id: str,
+    num_insights: int = 5,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -46,7 +46,7 @@ async def generate_insights(
         
         # Generate profile
         try:
-            profile_data = profiling_service.profile_dataset(df)
+            profile_data = DataProfilingService.profile_dataset(df)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to generate profile: {str(e)}")
         
@@ -84,7 +84,8 @@ async def generate_insights(
             insights = InsightService.generate_insights(
                 profile=profile_data,
                 ml_results=ml_results,
-                dashboard_info=dashboard_info
+                dashboard_info=dashboard_info,
+                num_insights=num_insights
             )
         except Exception as e:
             print(f"Error generating insights: {str(e)}")
@@ -178,6 +179,7 @@ async def generate_insights(
 @router.post("/charts/{dashboard_id}")
 async def generate_chart_insights(
     dashboard_id: str,
+    num_charts: int = 5,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -203,67 +205,32 @@ async def generate_chart_insights(
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to load dataset: {str(e)}")
         
-        # Get profile
+        # Use the decoupled AnalysisService
         try:
-            profile = DataProfilingService.profile_dataset(df)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to generate profile: {str(e)}")
-        
-        # Generate chart configurations (same as analysis.py)
-        try:
-            chart_configs = ChartService.generate_chart_config(df, profile)
+            from services.analysis_service import AnalysisService
             
-            # Generate actual data for each chart
-            charts = []
-            for config in chart_configs:
-                try:
-                    chart_data = ChartService.generate_chart_data(df, config)
-                    charts.append({
-                        **config,
-                        "chart_data": chart_data
-                    })
-                except Exception as chart_error:
-                    print(f"Warning: Failed to generate chart data: {str(chart_error)}")
-                    continue
+            # Reconstruct dashboard_info dictionary explicitly
+            dashboard_info = {
+                "title": dashboard.title or "Untitled",
+                "target_column": getattr(dashboard, "target_column", "Unknown"),
+                "problem_type": getattr(dashboard, "problem_type", "Unknown")
+            }
+            
+            analysis_result = AnalysisService.analyze_dataset(df, dashboard_info=dashboard_info, limit=num_charts)
+            charts = analysis_result["charts"]
+            chart_insights = analysis_result["insights"]
         except Exception as e:
-            print(f"Error generating charts: {str(e)}")
+            print(f"Error analyzing dataset: {str(e)}")
             import traceback
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Failed to generate charts: {str(e)}")
-        
-        if not charts or len(charts) == 0:
+            raise HTTPException(status_code=500, detail=f"Failed to generate charts and insights: {str(e)}")
+
+        if not charts:
             return {
                 "success": False,
                 "message": "No charts found for this dashboard",
                 "insights": []
             }
-        
-        # Prepare dashboard info
-        dashboard_info = {
-            "title": dashboard.title or "Untitled",
-            "description": dashboard.description or "",
-            "row_count": dashboard.row_count or 0,
-            "column_count": dashboard.column_count or 0,
-            "target_column": dashboard.target_column or "Unknown",
-            "problem_type": dashboard.problem_type or "Unknown"
-        }
-        
-        # Generate chart insights using Gemini
-        try:
-            chart_insights = InsightService.generate_chart_insights(charts, dashboard_info)
-        except Exception as e:
-            print(f"Error generating chart insights: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            
-            # Fallback to basic insights
-            chart_insights = [{
-                "category": "visualization",
-                "priority": "low",
-                "title": "Charts Available",
-                "description": f"Generated {len(charts)} visualizations for data exploration.",
-                "action": "Review each chart to understand different aspects of your data."
-            }]
         
         # Validate insights
         if not chart_insights or not isinstance(chart_insights, list):

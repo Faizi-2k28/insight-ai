@@ -21,33 +21,7 @@ MAX_FILE_SIZE_MB = 100  # 100 MB limit
 MAX_ROWS = 1_000_000  # 1 million rows limit
 MAX_COLUMNS = 500  # 500 columns limit
 
-
-def _read_csv_with_fallback(contents: bytes) -> pd.DataFrame:
-    """
-    Read CSV bytes with practical encoding fallbacks.
-    Excel/Windows exports are frequently cp1252/latin-1 rather than UTF-8.
-    """
-    encodings = ("utf-8", "utf-8-sig", "cp1252", "latin-1")
-    last_error = None
-
-    for encoding in encodings:
-        try:
-            return pd.read_csv(io.BytesIO(contents), encoding=encoding)
-        except UnicodeDecodeError as e:
-            last_error = e
-            continue
-
-    if last_error is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "CSV encoding is unsupported. Please upload UTF-8 CSV "
-                "or re-save the file from Excel as UTF-8."
-            ),
-        )
-
-    return pd.read_csv(io.BytesIO(contents))
-
+from services.data_service import DataService
 
 def _to_json_safe(value):
     """Normalize pandas/numpy-ish values into JSON-safe primitives."""
@@ -83,10 +57,10 @@ async def validate_file(
     """Validate uploaded CSV file"""
     
     # Check file extension
-    if not file.filename or not file.filename.lower().endswith(".csv"):
+    if not file.filename or not file.filename.lower().endswith((".csv", ".xlsx")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only CSV files are allowed"
+            detail="Only CSV and Excel (.xlsx) files are allowed"
         )
     
     # Read file
@@ -107,8 +81,8 @@ async def validate_file(
         )
     
     try:
-        # Parse CSV
-        df = _read_csv_with_fallback(contents)
+        # Parse Formats
+        df = DataService.process_upload(contents, file.filename)
         
         # Check for empty dataset
         if len(df) == 0:
@@ -203,15 +177,10 @@ async def validate_file(
             "suggested_problem_type": suggested_problem_type
         }
         
-    except pd.errors.EmptyDataError:
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="CSV file is empty"
-        )
-    except pd.errors.ParserError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid CSV format: {str(e)}"
+            detail=str(e)
         )
     except HTTPException:
         raise
@@ -245,7 +214,7 @@ async def create_dashboard(
     # Read and parse file
     try:
         contents = await file.read()
-        df = _read_csv_with_fallback(contents)
+        df = DataService.process_upload(contents, file.filename)
         
         # Validate dataset
         if len(df) < 10:
@@ -290,10 +259,10 @@ async def create_dashboard(
             "message": "Dashboard created successfully"
         }
         
-    except pd.errors.ParserError as e:
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid CSV format: {str(e)}"
+            detail=str(e)
         )
     except HTTPException:
         raise

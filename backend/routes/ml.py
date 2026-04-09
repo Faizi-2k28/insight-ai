@@ -82,89 +82,54 @@ async def train_models(
         from services.dataset_service import DatasetService
         data_list = DatasetService.load_dataset(db, uuid.UUID(dashboard_id))
         
-        # Determine strict problem type from dashboard if set
-        problem_type = dashboard.problem_type
-        
         df = pd.DataFrame(data_list)
         logger.info(
             "Dataset loaded: %s rows x %s columns, target=%s",
             len(df), len(df.columns), dashboard.target_column
         )
         
-        # Universal preprocessing
-        preprocessor = UniversalPreprocessor(
-            target_column=dashboard.target_column,
-            problem_type=dashboard.problem_type
+        # Delegate training orchestration to MLService
+        from services.ml_service import MLService
+        training_output = await asyncio.to_thread(
+            MLService.train_and_evaluate,
+            df, dashboard.target_column, dashboard.problem_type
         )
         
-        df_processed, detected_type = preprocessor.fit_transform(df)
-        
-        # Update dashboard problem type
+        detected_type = training_output["detected_type"]
         dashboard.problem_type = detected_type
         
-        # Separate features and target
-        X = df_processed.drop(columns=[dashboard.target_column])
-        y = df_processed[dashboard.target_column]
-        
-        # Split data
-        test_size = min(0.2, max(0.1, 100 / len(X)))
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=42,
-            stratify=y if detected_type == 'classification' else None
-        )
-        
-        logger.info("Train/test split: train=%s test=%s", len(X_train), len(X_test))
-        
-        # Train models
-        trainer = UniversalMLTrainer(problem_type=detected_type)
-        models = trainer.get_optimized_models(X, y)
-        
-        logger.info("Training %s optimized models", len(models))
-        
+        # Persist results to DB
         results = []
         best_score = -float('inf')
         best_model_id = None
         
-        for model_name, model in models:
-            # Offload CPU-heavy training to thread
-            result = await asyncio.to_thread(
-                trainer.train_single_model,
-                model_name, model,
-                X_train.values, X_test.values,
-                y_train.values, y_test.values,
-                X_train.columns.tolist()
+        for result in training_output["results"]:
+            ml_result = MLResult(
+                dashboard_id=dashboard.id,
+                model_name=result['model_name'],
+                model_type=result['model_type'],
+                test_score=result['test_score_db'],
+                cv_score=result['cv_score_db'],
+                training_time=result['training_time'],
+                feature_importance=result['feature_importance'],
+                hyperparameters=result['metrics'],
+                is_best_model=result['test_score'] > best_score
             )
             
-            if result:
-                db_cv_score = _sanitize_score_for_db(result.get("cv_score"), result.get("model_type", detected_type))
-                db_test_score = _sanitize_test_score_for_db(result.get("test_score"), result.get("model_type", detected_type))
-                # Save to database
-                ml_result = MLResult(
-                    dashboard_id=dashboard.id,
-                    model_name=result['model_name'],
-                    model_type=result['model_type'],
-                    test_score=db_test_score,
-                    cv_score=db_cv_score,
-                    training_time=result['training_time'],
-                    feature_importance=result['feature_importance'],
-                    hyperparameters=result['metrics'],
-                    is_best_model=result['test_score'] > best_score
-                )
-                
-                db.add(ml_result)
-                db.flush()
-                
-                if result['test_score'] > best_score:
-                    best_score = result['test_score']
-                    best_model_id = ml_result.id
-                
-                results.append({
-                    "id": str(ml_result.id),
-                    **result,
-                    "test_score": db_test_score,
-                    "cv_score": db_cv_score,
-                    "is_best_model": result['test_score'] > best_score
-                })
+            db.add(ml_result)
+            db.flush()
+            
+            if result['test_score'] > best_score:
+                best_score = result['test_score']
+                best_model_id = ml_result.id
+            
+            results.append({
+                "id": str(ml_result.id),
+                **result,
+                "test_score": result['test_score_db'],
+                "cv_score": result['cv_score_db'],
+                "is_best_model": result['test_score'] > best_score
+            })
         
         # Mark best model
         if best_model_id:
@@ -178,12 +143,8 @@ async def train_models(
         
         db.commit()
         
-        # Find best result
-        best_result = max(results, key=lambda x: x['test_score']) if results else None
-        
-        logger.info("Training complete: %s/%s models", len(results), len(models))
-        if best_result:
-            logger.info("Best model: %s (%.4f)", best_result["model_name"], best_result["test_score"])
+        best_result = training_output["best_result"]
+        logger.info("Training complete: %s models", len(results))
         
         return {
             "success": True,

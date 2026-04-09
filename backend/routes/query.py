@@ -49,30 +49,24 @@ def ask_question(
     
     start_time = time.time()
     
-    # OUTPUT VARIABLES
-    dsl_data = None
-    generated_sql = None
-    result = None
-    error_msg = None
-    rows = []
-    columns = []
-    
     # 1. Fetch Dashboard & Access Check
     dashboard = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dashboard:
         raise HTTPException(status_code=404, detail="Dashboard not found")
         
-    # Check access (Owner or Admin - basic check, can be expanded to Shared users)
-    # For now, simplistic check as requested
     if str(dashboard.user_id) != str(current_user.id):
-        # Allow if shared? (Scope: user owns dashboard OR dashboard shared)
-        # Assuming no share model active usage in this phase, strict ownership for safety
-        # or admin logic if needed. keeping it safe:
         raise HTTPException(status_code=403, detail="Not authorized to access this dashboard")
 
     dataset_storage = db.query(DatasetStorage).filter(DatasetStorage.dashboard_id == dashboard_id).first()
     if not dataset_storage:
         raise HTTPException(status_code=404, detail="Dataset not found")
+
+    error_msg = None
+    dsl_data = None
+    generated_sql = None
+    columns = []
+    rows = []
+    chart_suggestion = None
 
     try:
         # 2. Get Schema Metadata
@@ -83,44 +77,29 @@ def ask_question(
         schema_info = profile.get("basic_info", {})
         schema_info["columns"] = profile.get("columns", [])
 
-        # 3. Generate DSL via LLM
-        dsl = LLMService.generate_query_dsl(request.question, schema_info)
-        if not dsl:
-            error_msg = "Failed to interpret question or LLM unavailable."
-            # We still want to log this failure? yes.
-            # But we can't save much.
-            
-        else:
-            dsl_data = dsl.dict()
-            
-            # 4. Execute DSL
-            result = QueryService.execute_dsl(records, dsl)
-            generated_sql = result["executed_sql"]
-            columns = result["columns"]
-            rows = result["rows"]
+        # 3. Delegate to QueryService
+        qr = QueryService.process_question(request.question, records, schema_info)
+        dsl_data = qr["dsl"]
+        generated_sql = qr["generated_sql"]
+        columns = qr["columns"]
+        rows = qr["rows"]
+        chart_suggestion = qr["chart_suggestion"]
+        error_msg = qr["error"]
 
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Query execution error: {e}")
 
-    # 5. Calculate Duration & Suggestion
-    duration = (time.time() - start_time) * 1000 # ms
-    
-    chart_suggestion = None
-    if not error_msg and rows:
-        chart_suggestion = QueryService.generate_chart_suggestion(columns, rows)
-
-    # 6. Persist History
-    # Store snippet: first 50 rows max
+    # 4. Persist History
+    duration = (time.time() - start_time) * 1000
     preview_data = rows[:50] if rows else None
     
-    # Ensure User ID is correct type for DB
     history_entry = QueryHistory(
         user_id=current_user.id,
         dashboard_id=dashboard.id,
         query_text=request.question,
-        generated_code=generated_sql, # Storing SQL here as 'code'
-        result_data=preview_data,     # JSON preview
+        generated_code=generated_sql,
+        result_data=preview_data,
         execution_time=duration,
         error_message=error_msg,
         was_successful=(error_msg is None)
@@ -128,7 +107,7 @@ def ask_question(
     db.add(history_entry)
     db.commit()
 
-    # 7. Response
+    # 5. Response
     if error_msg:
         return QueryResponse(
             success=False,

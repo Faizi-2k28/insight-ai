@@ -23,16 +23,12 @@ def test_dataset_file_storage_flow():
     random_suffix = str(uuid.uuid4())[:8]
     email = f"storage_test_{random_suffix}@example.com"
     
-    client.post(
+    register_res = client.post(
         "/api/auth/register",
         json={"email": email, "password": "Password123!", "name": "Storage Tester"}
     )
-    
-    login_res = client.post(
-        "/api/auth/login",
-        json={"email": email, "password": "Password123!"}
-    )
-    token = login_res.json()["access_token"]
+    token = register_res.json()["access_token"]
+    token = register_res.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
     
     # 2. Upload Dataset (Tiny CSV)

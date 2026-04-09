@@ -24,24 +24,26 @@ class LLMService:
     def generate_query_dsl(question: str, schema_info: Dict[str, Any]) -> Optional[QueryDSL]:
         """
         Generates a valid QueryDSL object from a natural language question.
-        Returns None if generation fails.
+        Tries Gemini first, falls back to keyword-based parsing if LLM is unavailable.
         """
         api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            logger.error("GEMINI_API_KEY missing for query generation.")
-            return None
+        
+        # Extract column info for both LLM and fallback
+        columns_info = schema_info.get("columns", [])
+        column_names = [col['name'] for col in columns_info]
+        
+        # --- Try Gemini first ---
+        if api_key:
+            try:
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel('gemini-2.5-flash')
 
-        try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.5-flash')
-
-            # Extract relevant schema info
-            columns = [
-                f"{col['name']} ({col['column_type']})" 
-                for col in schema_info.get("columns", [])
-            ]
-            
-            prompt = f"""
+                columns = [
+                    f"{col['name']} ({col['column_type']})" 
+                    for col in columns_info
+                ]
+                
+                prompt = f"""
             You are a data analyst converting questions into a structured JSON query DSL.
             
             Dataset Schema:
@@ -76,22 +78,151 @@ class LLMService:
             Return JSON:
             """
 
-            response = model.generate_content(prompt)
-            text = response.text.strip()
-            
-            # Clean markdown
-            if text.startswith("```json"):
-                text = text[7:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-            
-            # Parse and Validate
-            data = json.loads(text)
-            return QueryDSL(**data)
+                response = model.generate_content(prompt)
+                text = response.text.strip()
+                
+                # Clean markdown
+                if text.startswith("```json"):
+                    text = text[7:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+                
+                # Parse and Validate
+                data = json.loads(text)
+                return QueryDSL(**data)
 
+            except Exception as e:
+                logger.warning(f"Gemini DSL generation failed: {e}. Falling back to keyword parser.")
+        
+        # --- Keyword-based fallback ---
+        return LLMService._keyword_fallback_dsl(question, columns_info, column_names)
+    
+    @staticmethod
+    def _keyword_fallback_dsl(
+        question: str, 
+        columns_info: List[Dict[str, Any]], 
+        column_names: List[str]
+    ) -> Optional[QueryDSL]:
+        """
+        Parse common natural-language query patterns into a QueryDSL
+        without needing an LLM. Handles: top/bottom N, show/list all,
+        count/sum/average by, filter patterns, etc.
+        """
+        import re
+        
+        q = question.lower().strip()
+        
+        numeric_cols = [c['name'] for c in columns_info if c.get('column_type') == 'numeric']
+        categorical_cols = [c['name'] for c in columns_info if c.get('column_type') == 'categorical']
+        
+        # Helper: find a column name mentioned in the question
+        def find_mentioned_columns(text):
+            found = []
+            text_lower = text.lower()
+            # Sort by length descending to match longer names first
+            for col in sorted(column_names, key=len, reverse=True):
+                if col.lower() in text_lower:
+                    found.append(col)
+            return found
+        
+        mentioned = find_mentioned_columns(q)
+        
+        # Extract a number from the question (for "top 5", "first 10", etc.)
+        limit_match = re.search(r'(?:top|first|last|bottom|show|list)\s+(\d+)', q)
+        limit = int(limit_match.group(1)) if limit_match else None
+        
+        try:
+            # --- Pattern 1: "top N <column>" or "top N" ---
+            if re.search(r'\btop\b|\bhighest\b|\bbest\b|\blargest\b|\bmost\b', q):
+                sort_col = mentioned[0] if mentioned and mentioned[0] in numeric_cols else (numeric_cols[0] if numeric_cols else column_names[0])
+                return QueryDSL(
+                    select=column_names[:5],  # Show first 5 columns
+                    sort=[{"column": sort_col, "descending": True}],
+                    limit=min(limit or 5, 200)
+                )
+            
+            # --- Pattern 2: "bottom N" / "lowest" ---
+            if re.search(r'\bbottom\b|\blowest\b|\bworst\b|\bsmallest\b|\bleast\b', q):
+                sort_col = mentioned[0] if mentioned and mentioned[0] in numeric_cols else (numeric_cols[0] if numeric_cols else column_names[0])
+                return QueryDSL(
+                    select=column_names[:5],
+                    sort=[{"column": sort_col, "descending": False}],
+                    limit=min(limit or 5, 200)
+                )
+            
+            # --- Pattern 3: "count by <column>" / "how many per <column>" ---
+            if re.search(r'\bcount\b.*\bby\b|\bhow many\b.*\bper\b|\bhow many\b.*\bby\b|\bcount\b.*\bper\b|\bcount\b.*\beach\b', q):
+                group_col = mentioned[0] if mentioned else (categorical_cols[0] if categorical_cols else column_names[0])
+                return QueryDSL(
+                    groupby=[group_col],
+                    aggregations=[{"column": group_col, "function": "count", "alias": f"count_{group_col}"}],
+                    sort=[{"column": f"count_{group_col}", "descending": True}],
+                    limit=min(limit or 20, 200)
+                )
+            
+            # --- Pattern 4: "average/mean <col> by <col>" ---
+            if re.search(r'\baverage\b|\bmean\b', q):
+                agg_col = None
+                group_col = None
+                for col in mentioned:
+                    if col in numeric_cols and not agg_col:
+                        agg_col = col
+                    elif col in categorical_cols and not group_col:
+                        group_col = col
+                agg_col = agg_col or (numeric_cols[0] if numeric_cols else column_names[0])
+                if group_col:
+                    return QueryDSL(
+                        groupby=[group_col],
+                        aggregations=[{"column": agg_col, "function": "mean", "alias": f"avg_{agg_col}"}],
+                        sort=[{"column": f"avg_{agg_col}", "descending": True}],
+                        limit=min(limit or 20, 200)
+                    )
+                else:
+                    return QueryDSL(
+                        aggregations=[{"column": agg_col, "function": "mean", "alias": f"avg_{agg_col}"}],
+                        limit=1
+                    )
+            
+            # --- Pattern 5: "sum <col> by <col>" / "total" ---
+            if re.search(r'\bsum\b|\btotal\b', q):
+                agg_col = None
+                group_col = None
+                for col in mentioned:
+                    if col in numeric_cols and not agg_col:
+                        agg_col = col
+                    elif col in categorical_cols and not group_col:
+                        group_col = col
+                agg_col = agg_col or (numeric_cols[0] if numeric_cols else column_names[0])
+                if group_col:
+                    return QueryDSL(
+                        groupby=[group_col],
+                        aggregations=[{"column": agg_col, "function": "sum", "alias": f"total_{agg_col}"}],
+                        sort=[{"column": f"total_{agg_col}", "descending": True}],
+                        limit=min(limit or 20, 200)
+                    )
+                else:
+                    return QueryDSL(
+                        aggregations=[{"column": agg_col, "function": "sum", "alias": f"total_{agg_col}"}],
+                        limit=1
+                    )
+            
+            # --- Pattern 6: "show all" / "list all" / "show me" ---
+            if re.search(r'\bshow\b|\blist\b|\bdisplay\b|\bgive\b|\bget\b', q):
+                select = mentioned[:5] if mentioned else column_names[:5]
+                return QueryDSL(
+                    select=select,
+                    limit=min(limit or 100, 200)
+                )
+            
+            # --- Default: select all columns, sensible limit ---
+            return QueryDSL(
+                select=column_names[:5],
+                limit=min(limit or 10, 200)
+            )
+        
         except Exception as e:
-            logger.error(f"DSL generation failed: {e}")
+            logger.error(f"Keyword fallback DSL failed: {e}")
             return None
 
 

@@ -3,8 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database.connection import get_db
 from database.models import User, Dashboard, DatasetStorage
-from services.data_profiling_service import DataProfilingService
-from services.chart_service import ChartService
+from services.analysis_service import AnalysisService
 from routes.auth import get_current_active_user
 import uuid
 import pandas as pd
@@ -34,7 +33,6 @@ async def get_data_profile(
         )
     
     # Get dataset
-    # Get dataset
     from services.dataset_service import DatasetService
     data_list = DatasetService.load_dataset(db, dashboard.id)
     
@@ -46,8 +44,9 @@ async def get_data_profile(
             detail="Dataset is empty"
         )
     
-    # Profile the dataset
-    profile = DataProfilingService.profile_dataset(df)
+    # Profile the dataset via AnalysisService
+    analysis_result = AnalysisService.analyze_dataset(df)
+    profile = analysis_result["profile"]
     
     return {
         "success": True,
@@ -59,6 +58,7 @@ async def get_data_profile(
 @router.get("/charts/{dashboard_id}")
 async def get_chart_configurations(
     dashboard_id: str,
+    num_charts: int = 5,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -77,26 +77,13 @@ async def get_chart_configurations(
         )
     
     # Get dataset
-    # Get dataset
     from services.dataset_service import DatasetService
     data_list = DatasetService.load_dataset(db, dashboard.id)
     
     df = pd.DataFrame(data_list)
     
-    # Profile dataset first
-    profile = DataProfilingService.profile_dataset(df)
-    
-    # Generate chart configurations
-    chart_configs = ChartService.generate_chart_config(df, profile)
-    
-    # Generate actual data for each chart
-    charts_with_data = []
-    for config in chart_configs:
-        chart_data = ChartService.generate_chart_data(df, config)
-        charts_with_data.append({
-            **config,
-            "chart_data": chart_data
-        })
+    analysis_result = AnalysisService.analyze_dataset(df, limit=num_charts)
+    charts_with_data = analysis_result["charts"]
     
     return {
         "success": True,
@@ -138,35 +125,17 @@ async def get_chart_recommendations(
             detail="Dataset is empty"
         )
     
-    # Profile dataset
-    profile = DataProfilingService.profile_dataset(df)
-    
-    # Generate paginated chart configurations
-    # This returns a dict with metadata because return_metadata=True
-    result = ChartService.generate_chart_config(
-        df, 
-        profile, 
-        limit=limit, 
-        offset=offset, 
-        return_metadata=True
-    )
-    
-    # Generate actual data for each chart
-    charts_with_data = []
-    for config in result["charts"]:
-        chart_data = ChartService.generate_chart_data(df, config)
-        charts_with_data.append({
-            **config,
-            "chart_data": chart_data
-        })
+    analysis_result = AnalysisService.analyze_dataset(df, limit=limit, offset=offset)
+    charts_with_data = analysis_result["charts"]
+    meta = analysis_result["metadata"]
     
     return {
         "success": True,
         "dashboard_id": dashboard_id,
-        "total_candidates": result["total"],
+        "total_candidates": meta["total_candidates"],
         "returned_count": len(charts_with_data),
-        "limit": result["limit"],
-        "offset": result["offset"],
+        "limit": meta["limit"],
+        "offset": meta["offset"],
         "charts": charts_with_data
     }
 
@@ -192,14 +161,14 @@ async def get_dashboard_summary(
         )
     
     # Get dataset
-    # Get dataset
     from services.dataset_service import DatasetService
     data_list = DatasetService.load_dataset(db, dashboard.id)
     
     df = pd.DataFrame(data_list)
     
-    # Get profile
-    profile = DataProfilingService.profile_dataset(df)
+    # Get profile via AnalysisService
+    analysis_result = AnalysisService.analyze_dataset(df)
+    profile = analysis_result["profile"]
     
     # Extract key insights
     summary = {

@@ -14,17 +14,11 @@ def test_ml_training_flow():
     random_suffix = str(uuid.uuid4())[:8]
     email = f"ml_test_{random_suffix}@example.com"
     
-    client.post(
+    register_res = client.post(
         "/api/auth/register",
         json={"email": email, "password": "Password123!", "name": "ML Tester"}
     )
-    
-    # 2. Login
-    login_res = client.post(
-        "/api/auth/login",
-        json={"email": email, "password": "Password123!"}
-    )
-    token = login_res.json()["access_token"]
+    token = register_res.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
     
     # 3. Upload Dataset
