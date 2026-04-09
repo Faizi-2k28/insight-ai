@@ -59,7 +59,7 @@ export default function SignupPage() {
         if (!agreed) return setError("Please agree to the Terms & Privacy Policy.");
         setLoading(true);
         await new Promise((r) => setTimeout(r, 900));
-        const { ok, error: err } = signup(name.trim(), email, password);
+        const { ok, error: err } = await signup(name.trim(), email, password);
         if (ok) router.push("/dashboard");
         else { setError(err || "Signup failed"); setLoading(false); }
     };

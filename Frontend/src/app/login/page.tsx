@@ -35,7 +35,7 @@ export default function LoginPage() {
         if (!password) return setError("Please enter your password.");
         setLoading(true);
         await new Promise((r) => setTimeout(r, 700));
-        const { ok, error: err } = login(username.trim(), password);
+        const { ok, error: err } = await login(username.trim(), password);
         if (ok) router.push("/dashboard");
         else { setError(err || "Invalid credentials."); setLoading(false); }
     };

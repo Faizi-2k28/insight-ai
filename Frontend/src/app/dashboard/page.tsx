@@ -4,6 +4,8 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import AIProcessingModal from "@/components/AIProcessingModal";
+import { dashboardService } from "@/services/dashboardService";
+import { uploadService } from "@/services/uploadService";
 
 /* ─────────── Types ─────────── */
 interface Project {
@@ -103,7 +105,7 @@ const NAV_ITEMS = [
 const SETTINGS_ICON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>;
 
 function Sidebar({ collapsed, activeNav, setActiveNav, user, logout, theme, toggleTheme, isMobile, closeMobile }:
-    { collapsed: boolean; activeNav: string; setActiveNav: (id: string) => void; user: { name: string; avatar: string; role: string } | null; logout: () => void; theme: string; toggleTheme: () => void; isMobile: boolean; closeMobile: () => void }) {
+    { collapsed: boolean; activeNav: string; setActiveNav: (id: string) => void; user: { name: string; avatar?: string; role: string } | null; logout: () => void; theme: string; toggleTheme: () => void; isMobile: boolean; closeMobile: () => void }) {
     const router = useRouter();
     return (
         <aside style={{
@@ -219,7 +221,35 @@ export default function DashboardPage() {
     const { theme, toggle } = useTheme();
     const router = useRouter();
 
-    const [projects, setProjects] = useState<Project[]>(INITIAL_PROJECTS);
+    const [projects, setProjects] = useState<Project[]>([]);
+    const [uploadFile, setUploadFile] = useState<File | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+
+    const loadDashboards = useCallback(async () => {
+        setIsLoading(true);
+        try {
+            const data = await dashboardService.getDashboards();
+            const mappedProjects: Project[] = data.dashboards.map((d: any) => ({
+                id: d.id,
+                name: d.dataset_filename,
+                type: d.dataset_filename.split('.').pop()?.toLowerCase() || 'csv',
+                model: d.problem_type === 'regression' ? 'Regression' : 'Classification',
+                status: "Analysis Ready",
+                rows: d.row_count,
+                edited: new Date(d.created_at).toLocaleDateString(),
+                starred: false
+            }));
+            setProjects(mappedProjects);
+        } catch (error) {
+            console.error("Failed to load dashboards", error);
+        } finally {
+            setIsLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (user) loadDashboards();
+    }, [user, loadDashboards]);
     const [search, setSearch] = useState("");
     const [filter, setFilter] = useState("All");
     const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
@@ -241,6 +271,7 @@ export default function DashboardPage() {
         const allowed = [".csv", ".xlsx", ".xls", ".json"];
         const ext = "." + file.name.split(".").pop()!.toLowerCase();
         if (!allowed.includes(ext)) { alert("Please select a CSV, XLSX, or JSON file."); return; }
+        setUploadFile(file);
         setShowUpload(false);
         setAnalysisFile(file.name);
         setShowAnalysis(true);
@@ -440,7 +471,12 @@ export default function DashboardPage() {
                     </div>
 
                     {/* Project grid / list */}
-                    {filtered.length === 0 ? (
+                    {isLoading ? (
+                        <div style={{ textAlign: "center", padding: "80px 24px", color: "var(--color-text-muted)" }}>
+                            <div style={{ width: "40px", height: "40px", border: "3px solid rgba(0,209,255,0.1)", borderTop: "3px solid #00D1FF", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 16px" }}></div>
+                            <div style={{ fontSize: "1rem", color: "var(--color-text-secondary)" }}>Loading your datasets...</div>
+                        </div>
+                    ) : filtered.length === 0 ? (
                         <div style={{ textAlign: "center", padding: "80px 24px", color: "var(--color-text-muted)" }}>
                             <div style={{ fontSize: "2.5rem", marginBottom: "12px" }}>🔍</div>
                             <div style={{ fontSize: "1rem", marginBottom: "6px", color: "var(--color-text-secondary)" }}>No datasets found</div>
@@ -450,6 +486,7 @@ export default function DashboardPage() {
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "16px" }}>
                             {filtered.map((project) => (
                                 <div key={project.id} className="glass-card" style={{ padding: "20px", cursor: "pointer", position: "relative", transition: "all 0.25s", overflow: "hidden" }}
+                                    onClick={() => router.push('/analysis?id=' + project.id)}
                                     onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(0,209,255,0.25)"; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 12px 40px rgba(0,209,255,0.08)"; }}
                                     onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--color-border)"; e.currentTarget.style.transform = ""; e.currentTarget.style.boxShadow = ""; }}>
 
@@ -532,6 +569,7 @@ export default function DashboardPage() {
                                 <tbody>
                                     {filtered.map((p, i) => (
                                         <tr key={p.id} style={{ borderBottom: i < filtered.length - 1 ? "1px solid var(--color-border)" : "none", transition: "background 0.15s", cursor: "pointer" }}
+                                            onClick={() => router.push('/analysis?id=' + p.id)}
                                             onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; }}
                                             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
                                             <td style={{ padding: "13px 16px" }}>
@@ -621,9 +659,23 @@ export default function DashboardPage() {
                 <AIProcessingModal
                     fileName={analysisFile}
                     onClose={() => setShowAnalysis(false)}
-                    onGenerate={({ modelType, targetLabel }) => {
+                    onGenerate={async ({ modelType, targetLabel }) => {
                         setShowAnalysis(false);
-                        router.push(`/analysis?model=${modelType}&label=${encodeURIComponent(targetLabel)}`);
+                        if (!uploadFile) return;
+                        try {
+                            const problemType = (modelType === 'timeseries' || modelType === 'supervised') ? 'regression' : 'classification';
+                            const response = await uploadService.createDashboard(
+                                uploadFile,
+                                uploadFile.name.replace(/\.[^/.]+$/, ""),
+                                targetLabel || "auto",
+                                problemType,
+                                ""
+                            );
+                            router.push(`/analysis?id=${response.dashboard_id}`);
+                        } catch (error: any) {
+                            console.error("Upload failed:", error);
+                            alert(error.message || "Failed to create dashboard");
+                        }
                     }}
                 />
             )}

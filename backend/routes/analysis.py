@@ -84,10 +84,12 @@ async def get_chart_configurations(
     
     analysis_result = AnalysisService.analyze_dataset(df, limit=num_charts)
     charts_with_data = analysis_result["charts"]
+    insights = analysis_result.get("insights", [])
     
     return {
         "success": True,
-        "charts": charts_with_data
+        "charts": charts_with_data,
+        "insights": insights
     }
 
 

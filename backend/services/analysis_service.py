@@ -59,6 +59,30 @@ class AnalysisService:
                 "description": f"Generated {len(charts_with_data)} visualizations for data exploration.",
                 "action": "Review each chart to understand different aspects of your data."
             }]
+            
+        # Map insights back to individual charts for frontend component mapping
+        if len(insights) == len(charts_with_data):
+            for idx, chart in enumerate(charts_with_data):
+                chart["insights"] = []
+                if "description" in insights[idx]:
+                    chart["insights"].append(insights[idx]["description"])
+                if "action" in insights[idx]:
+                    chart["insights"].append(f"Recommendation: {insights[idx]['action']}")
+        else:
+            # Fallback if there's a length mismatch (e.g., from an error)
+            for chart in charts_with_data:
+                chart_title = chart.get("title", "")
+                # Find matching insight by title substring
+                matched = []
+                for ins in insights:
+                    if chart_title in ins.get("title", ""):
+                        if "description" in ins:
+                            matched.append(ins["description"])
+                        if "action" in ins:
+                            matched.append(f"Recommendation: {ins['action']}")
+                if matched:
+                    chart["insights"] = matched
+
 
         return {
             "profile": profile,

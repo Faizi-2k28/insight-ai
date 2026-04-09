@@ -2,6 +2,10 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "../../context/ThemeContext";
+import DynamicChartRenderer from '@/components/DynamicChartRenderer';
+import { analysisService } from '@/services/analysisService';
+import { queryService } from '@/services/queryService';
+import { useSearchParams } from 'next/navigation';
 
 import { BarChart, Bar, LineChart, Line, PieChart as RechartsPieChart, Pie, AreaChart, Area, Cell, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, ComposedChart, Sector, LabelList } from 'recharts';
 
@@ -904,6 +908,105 @@ function QuickBtn({ icon, label, onClick }: { icon: string; label: string; onCli
 ════════════════════════════════════ */
 export default function AnalysisPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
+    const dashboardId = searchParams?.get('id') || '';
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        if (!dashboardId) return;
+        
+        async function loadData() {
+            try {
+                setIsLoading(true);
+                const [profileRes, chartsRes] = await Promise.all([
+                    analysisService.getProfile(dashboardId),
+                    analysisService.getCharts(dashboardId)
+                ]);
+
+                const newWidgets: any[] = [];
+
+                // Build dynamic executive summary from profile
+                let summaryText = "Ready to explore the dataset.";
+                if (profileRes.profile) {
+                    const bi = profileRes.profile.basic_info;
+                    const dq = profileRes.profile.data_quality;
+                    summaryText = `Dataset contains ${bi.total_rows?.toLocaleString() || '?'} rows and ${bi.total_columns || '?'} columns. `;
+                    summaryText += `Memory usage: ${bi.memory_usage_mb?.toFixed(2) || '?'} MB. `;
+                    if (bi.duplicate_rows > 0) {
+                        summaryText += `Found ${bi.duplicate_rows.toLocaleString()} duplicate rows (${bi.duplicate_percentage?.toFixed(1)}%). `;
+                    } else {
+                        summaryText += `No duplicate rows detected. `;
+                    }
+                    if (dq) {
+                        summaryText += `Data quality score: ${dq.quality_score?.toFixed(1)}%.`;
+                    }
+                }
+
+                // Enrich summary with top insights if available
+                const insights = chartsRes.insights || [];
+                if (insights.length > 0) {
+                    const topInsights = insights.slice(0, 2);
+                    summaryText += `\n\nKey findings: ` + topInsights.map((ins: any) => ins.description).join(' ');
+                }
+
+                // Title widget
+                newWidgets.push({ id: -1, type: "title_widget", title: "Dashboard Analysis", size: "full", explanation: "", layout: "Seamless" });
+                
+                // Executive summary widget
+                newWidgets.push({ 
+                    id: 0, 
+                    type: "overview_text", 
+                    title: "Executive Summary", 
+                    size: "full", 
+                    explanation: summaryText
+                });
+
+                // Insights list widget (if we have insights)
+                if (insights.length > 0) {
+                    newWidgets.push({
+                        id: 1,
+                        type: "insights_table",
+                        title: "Key Insights",
+                        size: "full",
+                        explanation: insights.map((ins: any) => `${ins.title}: ${ins.description}`).join('\n')
+                    });
+                }
+
+                // Chart widgets
+                if (chartsRes.charts) {
+                    chartsRes.charts.forEach((chart: any, idx: number) => {
+                        let explanationText = chart.description || "";
+                        if (chart.insights && Array.isArray(chart.insights) && chart.insights.length > 0) {
+                            explanationText = chart.insights.join('\n');
+                        }
+                        
+                        newWidgets.push({
+                            id: idx + 10,
+                            type: "dynamic_chart",
+                            size: "medium",
+                            title: chart.title,
+                            explanation: explanationText,
+                            chartData: chart
+                        });
+                    });
+                }
+                
+                setWidgetConfigs(newWidgets);
+                setWidgetOrder(newWidgets.map(w => w.id));
+                const heights: Record<number, number> = {};
+                newWidgets.forEach(w => { heights[w.id] = w.type === 'insights_table' ? 280 : w.size === 'full' ? 200 : 360; });
+                setWidgetHeights(heights);
+
+                // Set project title dynamically
+                setProjectTitle(profileRes.dashboard_id ? `Analysis: ${profileRes.dashboard_id.substring(0, 8)}...` : "Dashboard Analysis");
+            } catch (err) {
+                console.error("Failed to load analysis:", err);
+            } finally {
+                setIsLoading(false);
+            }
+        }
+        loadData();
+    }, [dashboardId]);
     const [isReadOnly, setIsReadOnly] = useState(() => {
         if (typeof window !== "undefined") {
             return new URLSearchParams(window.location.search).get("view") === "true";
@@ -1017,17 +1120,8 @@ export default function AnalysisPage() {
 
     /* Widgets State */
     const INITIAL_WIDGETS = [
-        { id: -1, type: "title_widget", title: "Sales, Product, And Customer Insights", size: "full", explanation: "", layout: "Seamless" },
-        { id: 0, type: "overview_text", title: "Executive Summary", size: "full", explanation: "" },
-        { id: 1, type: "brand_insights", title: "Brand Insights", size: "full", explanation: "" },
-        ...KPI_CARDS.map((kpi, i) => ({ id: 2 + i, type: "kpi_card", title: kpi.label, size: "narrow", payload: kpi, explanation: "" })),
-        { id: 6, type: "chart_product_bar", title: "Revenue Share By Product", size: "medium", explanation: "" },
-        { id: 7, type: "chart_pie", title: "Customer Distribution By Location", size: "medium", explanation: "" },
-        { id: 8, type: "chart_category", title: "Category Revenue And Returns", size: "medium", explanation: "" },
-        { id: 9, type: "chart_price", title: "Individual Price By Product", size: "medium", explanation: "" },
-        { id: 10, type: "chart_stacked", title: "Monthly Revenue Mix By Region", size: "full", explanation: "" },
-        ...REGIONS.map((r, i) => ({ id: 11 + i, type: "regional_card", title: r.name, size: "narrow", payload: r, explanation: "" })),
-        { id: 15, type: "table_customer", title: "Customer Segment Value Overview", size: "full", explanation: "" },
+        { id: -1, type: "title_widget", title: "Loading Analysis...", size: "full", explanation: "", layout: "Seamless" },
+        { id: 0, type: "overview_text", title: "Executive Summary", size: "full", explanation: "Loading data profiling details..." }
     ];
 
     const [widgetConfigs, setWidgetConfigs] = useState(INITIAL_WIDGETS);
@@ -1128,24 +1222,35 @@ export default function AnalysisPage() {
         }));
     };
 
-    const handleSend = () => {
-        if (!chatInput.trim()) return;
+    const handleSend = async () => {
+        if (!chatInput.trim() || !dashboardId) return;
         const q = chatInput; setChatInput(""); setThinking(true);
         setChatMessages(p => [...p, { role: "user", text: q }]);
-        setTimeout(() => {
-            const answers: Record<string, string> = {
-                revenue: "📈 North region leads with $397.4K. Revenue peaked in September at $142K.",
-                region: "🌍 4 regions: North ($397.4K), East ($361.1K), West ($336.8K), South ($317.8K).",
-                chart: "📊 I can add more charts — try 'Add Charts' in the sidebar.",
-                color: "🎨 Use the theme selector on the left to change chart colors.",
-                insight: "💡 Key insight: Month-over-month variance peaks at +$126.2K in December and −$30.9K in May.",
-            };
-            const key = Object.keys(answers).find(k => q.toLowerCase().includes(k));
-            const resp = key ? answers[key] : "🔍 Based on the data, there are strong seasonal trends with revenue peaks in Sep and Dec.";
-            setChatMessages(p => [...p, { role: "ai", text: resp }]);
+        setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+        
+        try {
+            const res = await queryService.askQuestion(dashboardId, q);
+            if (res.error) {
+                setChatMessages(p => [...p, { role: "ai", text: `⚠️ Error: ${res.error}` }]);
+            } else {
+                let respText = "";
+                let newChart = null;
+                if (res.chart_suggestion) {
+                    respText = "📊 I generated a visualization based on your query.\n" + (res.generated_sql ? `\nBased on your query, I derived this SQL:\n\`\`\`sql\n${res.generated_sql}\n\`\`\`` : "");
+                    newChart = res.chart_suggestion;
+                } else if (res.rows && res.rows.length > 0) {
+                    respText = `Here is a preview of the results (${res.row_count} total rows):\n` + JSON.stringify(res.rows.slice(0, 3), null, 2);
+                } else {
+                    respText = "Search complete, but no specific matches or chart could be visualized.";
+                }
+                setChatMessages(p => [...p, { role: "ai", text: respText, chart: newChart } as any]);
+            }
+        } catch (e) {
+            setChatMessages(p => [...p, { role: "ai", text: "⚠️ Network error while querying." }]);
+        } finally {
             setThinking(false);
             setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
-        }, 1100);
+        }
     };
 
     const WIDGETS = widgetConfigs.map(config => {
@@ -1255,7 +1360,7 @@ export default function AnalysisPage() {
                 contentEditable={!isReadOnly} suppressContentEditableWarning 
                 onBlur={(e) => handleEditWidgetExplanation(config.id, e.currentTarget.innerText)}
                 style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: 1.7, margin: 0, padding: "0 20px 20px", outline: "none", cursor: "text", whiteSpace: "pre-wrap" }}>
-                {config.explanation || OVERVIEW_TEXT}
+                {config.explanation}
             </p>;
         } else if (config.type === "brand_insights") {
             const lines = config.explanation ? config.explanation.split('\n') : BRAND_INSIGHTS;
@@ -1374,6 +1479,8 @@ export default function AnalysisPage() {
             content = <div style={{ height: "200px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-text-muted)" }}>Pie chart visualization</div>;
         } else if (config.type === "data_table") {
             content = <div style={{ height: "200px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-text-muted)" }}>Data Table preview</div>;
+        } else if (config.type === "dynamic_chart") {
+            content = <div style={{ height: "100%", paddingBottom: "20px", display: "flex", flex: 1, minHeight: 250 }}><DynamicChartRenderer chart={(config as any).chartData} theme={ct} /></div>;
         }
 
         return { ...config, content, size: (config as any).size || "full" };
@@ -2532,7 +2639,7 @@ export default function AnalysisPage() {
                         </button>
 
                         {/* Slide Content */}
-                        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "60px 40px", overflowY: "auto", width: "100%" }}>
+                        <div style={{ flex: 1, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "60px 40px", overflowY: "auto", width: "100%" }}>
                             {currentSlide === 0 && (
                                 <div style={{ textAlign: "center", color: "#fff" }}>
                                     <h1 style={{ fontSize: "4rem", fontWeight: 800, marginBottom: "20px", letterSpacing: "-0.02em" }}>{projectTitle}</h1>
@@ -2570,7 +2677,7 @@ export default function AnalysisPage() {
                                 if (currentSlide !== slideIdx) return null;
                                 
                                 const lines = w!.explanation ? w!.explanation.split('\n') : null;
-                                const isTextBased = ["overview_text", "brand_insights", "text_editor"].includes(w!.type);
+                                const isTextBased = ["overview_text", "brand_insights", "text_editor", "insights_table", "insights_list"].includes(w!.type);
                                 
                                 return (
                                     <div key={w!.id} style={{ maxWidth: "1200px", width: "100%", animation: "fadeIn 0.3s ease" }}>
