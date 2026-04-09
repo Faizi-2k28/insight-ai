@@ -9,45 +9,11 @@ import json
 import sqlalchemy.dialects.postgresql
 from sqlalchemy.sql.sqltypes import ARRAY
 
-# MOCK TYPES (Copied from test_chart_api.py)
-class MockUUID(TypeDecorator):
-    impl = String
-    cache_ok = True
-    def __init__(self, as_uuid=True): super().__init__()
-    def process_bind_param(self, value, dialect): return str(value) if value else None
-    def process_result_value(self, value, dialect): return uuid.UUID(value) if value else None
-
-class MockJSON(TypeDecorator):
-    impl = Text
-    cache_ok = True
-    def process_bind_param(self, value, dialect): return json.dumps(value) if value else None
-    def process_result_value(self, value, dialect):
-        if value is None: return None
-        if isinstance(value, (dict, list)): return value
-        try: return json.loads(value)
-        except: return value
-
 from main import app
 from database.connection import get_db
 from database.models import Base, User, Dashboard, QueryHistory
 from routes.auth import get_current_active_user
 from datetime import datetime, timedelta
-
-# Setup in-memory DB
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, 
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-def override_get_db():
-    try:
-        db = TestingSessionLocal()
-        yield db
-    finally:
-        db.close()
 
 # Global var for user
 created_user = None
@@ -55,34 +21,25 @@ created_user = None
 def override_get_current_user():
     return created_user
 
-app.dependency_overrides[get_db] = override_get_db
-app.dependency_overrides[get_current_active_user] = override_get_current_user
+@pytest.fixture(autouse=True)
+def _patch_user():
+    app.dependency_overrides[get_current_active_user] = override_get_current_user
+    yield
+    app.dependency_overrides.pop(get_current_active_user, None)
 
 client = TestClient(app)
 
-def patch_metadata_for_sqlite(metadata):
-    from sqlalchemy.dialects.postgresql import JSONB, UUID
-    for table in metadata.tables.values():
-        for column in table.columns:
-            if isinstance(column.type, (JSONB, JSON, ARRAY)): column.type = MockJSON()
-            elif isinstance(column.type, (UUID, sqlalchemy.dialects.postgresql.UUID)): column.type = MockUUID()
-            elif hasattr(column.type, 'python_type') and column.type.python_type == uuid.UUID: column.type = MockUUID()
-
-@pytest.fixture(scope="module")
-def test_db():
+@pytest.fixture(scope="function")
+def test_db(db_session):
     global created_user
-    patch_metadata_for_sqlite(Base.metadata)
-    Base.metadata.create_all(bind=engine)
-    db = TestingSessionLocal()
+    db = db_session
     
     # Add user
     created_user = User(id=uuid.uuid4(), email="test@example.com", password_hash="dummy", is_active=True)
     db.add(created_user)
-    db.commit()
-    db.refresh(created_user)
+    db.flush()
     
     yield db
-    Base.metadata.drop_all(bind=engine)
 
 def test_get_history_empty(test_db):
     db = test_db
@@ -94,7 +51,7 @@ def test_get_history_empty(test_db):
         dataset_filename="dummy.csv"
     )
     db.add(dash)
-    db.commit()
+    db.flush()
     
     # 2. Fetch History
     resp = client.get(f"/api/query/history/{dash.id}")
@@ -115,7 +72,7 @@ def test_get_history_populated(test_db):
         dataset_filename="dummy.csv"
     )
     db.add(dash)
-    db.commit()
+    db.flush()
     
     # 2. Create History Items
     # Timestamps need to be set clearly
@@ -139,7 +96,7 @@ def test_get_history_populated(test_db):
         timestamp=t2
     )
     db.add_all([h1, h2])
-    db.commit()
+    db.flush()
     
     # 3. Fetch History
     resp = client.get(f"/api/query/history/{dash_id}")
@@ -168,7 +125,7 @@ def test_history_pagination(test_db):
             timestamp=base_time - timedelta(minutes=i)
         ))
     db.add_all(items)
-    db.commit()
+    db.flush()
     
     # Default limit 20
     resp = client.get(f"/api/query/history/{dash_id}")
@@ -189,7 +146,7 @@ def test_history_access_control(test_db):
     
     other_dash = Dashboard(id=uuid.uuid4(), user_id=other_user.id, title="Other Dash", dataset_filename="dummy.csv")
     db.add(other_dash)
-    db.commit()
+    db.flush()
     
     # Try to access with current_user (created_user)
     resp = client.get(f"/api/query/history/{other_dash.id}")

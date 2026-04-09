@@ -12,3 +12,7 @@ wheels/
 .env.*
 *.env
 artifacts/
+.pytest_cache
+
+*.txt
+*.err

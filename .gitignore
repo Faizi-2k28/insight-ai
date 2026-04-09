@@ -33,6 +33,7 @@ desktop.ini
 backend/.venv/
 backend/.venv_check/
 backend/venv/
+legacy/
 
 # Python cache
 backend/__pycache__/

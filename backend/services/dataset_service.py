@@ -26,9 +26,15 @@ class DatasetService:
     @staticmethod
     def save_dataset(db: Session, dashboard_id: uuid.UUID, df: pd.DataFrame) -> DatasetStorage:
         """
-        Save dataset records in DB JSON storage.
+        Save dataset records in DB JSON storage and write to disk.
         """
         data_records = df.to_dict("records")
+        
+        # Write to disk
+        storage_path = DatasetService.get_storage_path()
+        file_path = os.path.join(storage_path, f"{dashboard_id}.json")
+        with open(file_path, "w") as f:
+            json.dump(data_records, f)
 
         dataset_storage = db.query(DatasetStorage).filter(
             DatasetStorage.dashboard_id == dashboard_id

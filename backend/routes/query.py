@@ -77,7 +77,9 @@ def ask_question(
     try:
         # 2. Get Schema Metadata
         records = DatasetService.load_dataset(db, dashboard_id)
-        profile = DataProfilingService.profile_dataset(records)
+        import pandas as pd
+        df = pd.DataFrame(records)
+        profile = DataProfilingService.profile_dataset(df)
         schema_info = profile.get("basic_info", {})
         schema_info["columns"] = profile.get("columns", [])
 
