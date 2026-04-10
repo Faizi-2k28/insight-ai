@@ -493,10 +493,34 @@ function InsightsBox({ insights, theme }: { insights: string[]; theme: typeof CO
             borderRadius: "10px", padding: "14px 16px",
         }}>
             <div style={{ fontSize: "0.78rem", fontWeight: 700, color: theme.primary, marginBottom: "10px" }}>Key Insights</div>
-            <ul style={{ padding: "0 0 0 14px", margin: 0, display: "flex", flexDirection: "column", gap: "7px" }}>
-                {insights.map((ins, i) => (
-                    <li key={i} style={{ fontSize: "0.76rem", color: "var(--color-text-secondary)", lineHeight: 1.55 }}>{ins}</li>
-                ))}
+            <ul style={{ padding: "0", margin: 0, display: "flex", flexDirection: "column", gap: "7px", listStyle: "none" }}>
+                {insights.map((ins, i) => {
+                    if (ins.startsWith("Recommendation: ")) {
+                        return (
+                            <li key={i} style={{ 
+                                background: `${theme.primary}15`, 
+                                padding: '10px 12px', 
+                                borderRadius: '6px', 
+                                marginTop: '4px',
+                                borderLeft: `3px solid ${theme.primary}`
+                            }}>
+                                <div style={{ fontWeight: 700, color: theme.primary, display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px', fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2v1"/><path d="M12 7a5 5 0 1 0 5 5 1 1 0 0 1 1 1 1 1 0 0 1-1 1v1a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-1a1 1 0 0 1-1-1 1 1 0 0 1 1-1 5 5 0 1 0 5-5z"/></svg>
+                                    Actionable Recommendation
+                                </div>
+                                <div style={{ fontSize: "0.76rem", color: "var(--color-text-primary)", lineHeight: 1.55 }}>
+                                    {ins.replace("Recommendation: ", "").trim()}
+                                </div>
+                            </li>
+                        );
+                    }
+                    return (
+                        <li key={i} style={{ fontSize: "0.76rem", color: "var(--color-text-secondary)", lineHeight: 1.55, position: "relative", paddingLeft: "14px" }}>
+                            <span style={{ position: "absolute", left: 0, top: "6px", width: "4px", height: "4px", borderRadius: "50%", background: theme.primary }} />
+                            {ins}
+                        </li>
+                    );
+                })}
             </ul>
         </div>
     );
@@ -958,7 +982,8 @@ export default function AnalysisPage() {
                     type: "overview_text", 
                     title: "Executive Summary", 
                     size: "full", 
-                    explanation: summaryText
+                    explanation: summaryText,
+                    payload: profileRes.profile ? profileRes.profile.basic_info : null
                 });
 
                 // Insights list widget (if we have insights)
@@ -1111,7 +1136,7 @@ export default function AnalysisPage() {
     const ct = COLOR_THEMES[chartTheme];
 
     /* Chat */
-    const [chatMessages, setChatMessages] = useState<{ role: "user" | "ai"; text: string }[]>([
+    const [chatMessages, setChatMessages] = useState<{ role: "user" | "ai"; text: string; chart?: any }[]>([
         { role: "ai", text: "Hi! Ask me anything about this dashboard or tell me how to edit it." }
     ]);
     const [chatInput, setChatInput] = useState("");
@@ -1233,16 +1258,15 @@ export default function AnalysisPage() {
             if (res.error) {
                 setChatMessages(p => [...p, { role: "ai", text: `⚠️ Error: ${res.error}` }]);
             } else {
-                let respText = "";
+                let respText = res.text_response || "Search complete.";
                 let newChart = null;
-                if (res.chart_suggestion) {
-                    respText = "📊 I generated a visualization based on your query.\n" + (res.generated_sql ? `\nBased on your query, I derived this SQL:\n\`\`\`sql\n${res.generated_sql}\n\`\`\`` : "");
+                
+                if (res.intent === "data_query" && res.chart_suggestion) {
                     newChart = res.chart_suggestion;
-                } else if (res.rows && res.rows.length > 0) {
-                    respText = `Here is a preview of the results (${res.row_count} total rows):\n` + JSON.stringify(res.rows.slice(0, 3), null, 2);
-                } else {
-                    respText = "Search complete, but no specific matches or chart could be visualized.";
+                } else if (res.intent === "data_query" && res.rows && res.rows.length > 0) {
+                    respText += `\n\nPreview (${res.row_count} total rows):\n` + JSON.stringify(res.rows.slice(0, 3), null, 2);
                 }
+                
                 setChatMessages(p => [...p, { role: "ai", text: respText, chart: newChart } as any]);
             }
         } catch (e) {
@@ -1355,13 +1379,41 @@ export default function AnalysisPage() {
                 </div>
             );
         } else if (config.type === "overview_text") {
-
-            content = <p 
-                contentEditable={!isReadOnly} suppressContentEditableWarning 
-                onBlur={(e) => handleEditWidgetExplanation(config.id, e.currentTarget.innerText)}
-                style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: 1.7, margin: 0, padding: "0 20px 20px", outline: "none", cursor: "text", whiteSpace: "pre-wrap" }}>
-                {config.explanation}
-            </p>;
+            const basicInfo = (config as any).payload;
+            
+            content = (
+                <div style={{ padding: "0 20px 20px" }}>
+                    <p 
+                        contentEditable={!isReadOnly} suppressContentEditableWarning 
+                        onBlur={(e) => handleEditWidgetExplanation(config.id, e.currentTarget.innerText)}
+                        style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: 1.7, margin: 0, outline: "none", cursor: "text", whiteSpace: "pre-wrap" }}>
+                        {config.explanation}
+                    </p>
+                    
+                    {basicInfo && (
+                        <div style={{ display: "flex", gap: "12px", marginTop: "16px", flexWrap: "wrap" }}>
+                            <div style={{ background: "rgba(128,128,128,0.06)", padding: "8px 12px", borderRadius: "8px", border: "1px solid rgba(128,128,128,0.1)" }}>
+                                <div style={{ fontSize: "0.65rem", textTransform: "uppercase", color: "var(--color-text-muted)", fontWeight: 600 }}>Rows</div>
+                                <div style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--color-text-primary)" }}>{basicInfo.total_rows?.toLocaleString() || '?'}</div>
+                            </div>
+                            <div style={{ background: "rgba(128,128,128,0.06)", padding: "8px 12px", borderRadius: "8px", border: "1px solid rgba(128,128,128,0.1)" }}>
+                                <div style={{ fontSize: "0.65rem", textTransform: "uppercase", color: "var(--color-text-muted)", fontWeight: 600 }}>Columns</div>
+                                <div style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--color-text-primary)" }}>{basicInfo.total_columns?.toLocaleString() || '?'}</div>
+                            </div>
+                            <div style={{ background: "rgba(128,128,128,0.06)", padding: "8px 12px", borderRadius: "8px", border: "1px solid rgba(128,128,128,0.1)" }}>
+                                <div style={{ fontSize: "0.65rem", textTransform: "uppercase", color: "var(--color-text-muted)", fontWeight: 600 }}>Size</div>
+                                <div style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--color-text-primary)" }}>{basicInfo.memory_usage_mb?.toFixed(1) || '?'} MB</div>
+                            </div>
+                            {basicInfo.duplicate_rows > 0 && (
+                                <div style={{ background: "rgba(245,158,11,0.1)", padding: "8px 12px", borderRadius: "8px", border: "1px solid rgba(245,158,11,0.3)" }}>
+                                    <div style={{ fontSize: "0.65rem", textTransform: "uppercase", color: "#F59E0B", fontWeight: 600 }}>Duplicates</div>
+                                    <div style={{ fontSize: "0.9rem", fontWeight: 700, color: "#F59E0B" }}>{basicInfo.duplicate_rows.toLocaleString()} ({basicInfo.duplicate_percentage?.toFixed(1)}%)</div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
         } else if (config.type === "brand_insights") {
             const lines = config.explanation ? config.explanation.split('\n') : BRAND_INSIGHTS;
             content = (
@@ -1844,7 +1896,14 @@ export default function AnalysisPage() {
                                                     border: `1px solid ${m.role === "user" ? `${ct.primary}25` : "var(--color-border)"}`,
                                                     fontSize: "0.76rem", lineHeight: 1.5,
                                                     color: m.role === "user" ? ct.primary : "var(--color-text-primary)",
-                                                }}>{m.text}</div>
+                                                }}>
+                                                    <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+                                                    {m.chart && (
+                                                        <div style={{ marginTop: "12px", height: "260px", width: "100%", background: "var(--color-background)", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--color-border)" }}>
+                                                            <DynamicChartRenderer chart={m.chart} theme={ct} />
+                                                        </div>
+                                                    )}
+                                                </div>
                                             </div>
                                         ))}
                                         {thinking && (

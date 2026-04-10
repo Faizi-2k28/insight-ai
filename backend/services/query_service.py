@@ -246,12 +246,14 @@ class QueryService:
     @staticmethod
     def process_question(question: str, records: list, schema_info: dict) -> Dict[str, Any]:
         """
-        Full NLP query orchestration: LLM → DSL → execute → chart suggestion.
-        Returns a standardized dict with dsl, sql, columns, rows, chart_suggestion, error.
+        Full NLP query orchestration: LLM → Route Intent → Execute (if data) → Chart Suggestion.
+        Returns a standardized dict with intent, text_response, dsl, generated_sql, etc.
         """
         from services.llm_service import LLMService
 
         result = {
+            "intent": "conversational",
+            "text_response": None,
             "dsl": None,
             "generated_sql": None,
             "columns": [],
@@ -261,15 +263,27 @@ class QueryService:
             "error": None
         }
 
-        # 1. Generate DSL via LLM
-        dsl = LLMService.generate_query_dsl(question, schema_info)
-        if not dsl:
+        # 1. Generate Intent / DSL via LLM
+        parsed = LLMService.generate_query_dsl(question, schema_info)
+        if not parsed:
             result["error"] = "Failed to interpret question or LLM unavailable."
             return result
+            
+        result["intent"] = parsed.get("intent", "conversational")
+        result["text_response"] = parsed.get("text_response")
+        
+        # If it's just a conversation, return immediately!
+        if result["intent"] == "conversational":
+            return result
 
-        result["dsl"] = dsl.dict()
+        # 2. Execute DSL if data query
+        dsl = parsed.get("dsl")
+        if not dsl:
+            result["error"] = "Data query requested but no valid DSL was generated."
+            return result
+            
+        result["dsl"] = dsl.dict() if hasattr(dsl, "dict") else dsl
 
-        # 2. Execute DSL
         try:
             exec_result = QueryService.execute_dsl(records, dsl)
             result["generated_sql"] = exec_result["executed_sql"]

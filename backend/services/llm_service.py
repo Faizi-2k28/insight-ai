@@ -21,18 +21,16 @@ class LLMService:
         return bool(os.getenv("GEMINI_API_KEY"))
 
     @staticmethod
-    def generate_query_dsl(question: str, schema_info: Dict[str, Any]) -> Optional[QueryDSL]:
+    def generate_query_dsl(question: str, schema_info: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generates a valid QueryDSL object from a natural language question.
-        Tries Gemini first, falls back to keyword-based parsing if LLM is unavailable.
+        Generates a structured intent object from a natural language question.
+        Returns a dictionary with 'intent', 'text_response', and optionally 'dsl' properties.
         """
         api_key = os.getenv("GEMINI_API_KEY")
         
-        # Extract column info for both LLM and fallback
         columns_info = schema_info.get("columns", [])
         column_names = [col['name'] for col in columns_info]
         
-        # --- Try Gemini first ---
         if api_key:
             try:
                 genai.configure(api_key=api_key)
@@ -44,12 +42,12 @@ class LLMService:
                 ]
                 
                 prompt = f"""
-            You are a data analyst converting questions into a structured JSON query DSL.
+            You are a smart data assistant capable of general conversation and data analysis.
             
             Dataset Schema:
             Columns: {', '.join(columns)}
             
-            Supported Operations:
+            Supported Data Operations:
             - Select columns
             - Filter (==, !=, <, >, <=, >=, in, between, like)
             - Group By
@@ -60,43 +58,70 @@ class LLMService:
             User Question: "{question}"
 
             Output Constraints:
-            1. Return ONLY a valid JSON object matching the following structure.
-            2. Do NOT use columns that don't exist in the schema.
-            3. Infer the best query to answer the question.
-            4. If the user asks for a specific number of rows, set the limit accordingly (max 200).
-
-            JSON Structure Example:
-            {{
-                "select": ["col1", "col2"],
-                "filters": [{{"column": "col1", "operator": ">", "value": 10}}],
-                "groupby": ["col2"],
-                "aggregations": [{{"column": "col3", "function": "sum", "alias": "total_col3"}}],
-                "sort": [{{"column": "total_col3", "descending": true}}],
-                "limit": 5
-            }}
-
+            1. Return ONLY a valid JSON object.
+            2. If the user asks a general question (e.g., "summarize this", "hello", "what is this data?"), return:
+               {{
+                 "intent": "conversational",
+                 "text_response": "<your conversational, helpful answer>"
+               }}
+            3. If the user asks a specific data question requiring a query (e.g., "top 5 regions", "average price"), return:
+               {{
+                 "intent": "data_query",
+                 "text_response": "<brief explanation of the data we are pulling>",
+                 "dsl": {{
+                     "select": ["col1", "col2"],
+                     "filters": [{{"column": "col1", "operator": ">", "value": 10}}],
+                     "groupby": ["col2"],
+                     "aggregations": [{{"column": "col3", "function": "sum", "alias": "total_col3"}}],
+                     "sort": [{{"column": "total_col3", "descending": true}}],
+                     "limit": 5
+                 }}
+               }}
+            4. Do NOT use columns that don't exist in the schema for data queries.
+            
             Return JSON:
             """
 
                 response = model.generate_content(prompt)
                 text = response.text.strip()
                 
-                # Clean markdown
                 if text.startswith("```json"):
                     text = text[7:]
                 if text.endswith("```"):
                     text = text[:-3]
                 text = text.strip()
                 
-                # Parse and Validate
                 data = json.loads(text)
-                return QueryDSL(**data)
+                
+                # Check for legacy mapping just in case LLM hallucinated
+                if "intent" not in data:
+                    return {
+                        "intent": "data_query",
+                        "text_response": "Here is the data visualization based on your query.",
+                        "dsl": QueryDSL(**data)
+                    }
+                
+                # If intent exists
+                if data["intent"] == "data_query" and "dsl" in data:
+                    data["dsl"] = QueryDSL(**data["dsl"])
+                
+                return data
 
             except Exception as e:
                 logger.warning(f"Gemini DSL generation failed: {e}. Falling back to keyword parser.")
         
         # --- Keyword-based fallback ---
-        return LLMService._keyword_fallback_dsl(question, columns_info, column_names)
+        fallback_dsl = LLMService._keyword_fallback_dsl(question, columns_info, column_names)
+        if fallback_dsl:
+            return {
+                "intent": "data_query",
+                "text_response": "I've pulled this data using basic keyword matching.",
+                "dsl": fallback_dsl
+            }
+        return {
+            "intent": "conversational",
+            "text_response": "I had trouble understanding that query as a database request. How else can I help?"
+        }
     
     @staticmethod
     def _keyword_fallback_dsl(
