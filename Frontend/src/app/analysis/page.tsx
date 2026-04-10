@@ -1256,15 +1256,18 @@ export default function AnalysisPage() {
         try {
             const res = await queryService.askQuestion(dashboardId, q);
             if (res.error) {
-                setChatMessages(p => [...p, { role: "ai", text: `⚠️ Error: ${res.error}` }]);
+                setChatMessages(p => [...p, { role: "ai", text: `⚠️ ${res.error}` }]);
             } else {
-                let respText = res.text_response || "Search complete.";
+                // Use backend text_response directly — it always contains a meaningful answer
+                let respText = res.text_response || (res.intent === "data_query" ? "Here is the data matching your query." : "I'm not sure how to answer that.");
                 let newChart = null;
                 
-                if (res.intent === "data_query" && res.chart_suggestion) {
-                    newChart = res.chart_suggestion;
-                } else if (res.intent === "data_query" && res.rows && res.rows.length > 0) {
-                    respText += `\n\nPreview (${res.row_count} total rows):\n` + JSON.stringify(res.rows.slice(0, 3), null, 2);
+                if (res.intent === "data_query") {
+                    if (res.chart_suggestion && res.chart_suggestion.type) {
+                        newChart = res.chart_suggestion;
+                    } else if (res.rows && res.rows.length > 0) {
+                        respText += `\n\nPreview (${res.row_count} total rows):\n` + JSON.stringify(res.rows.slice(0, 5), null, 2);
+                    }
                 }
                 
                 setChatMessages(p => [...p, { role: "ai", text: respText, chart: newChart } as any]);
@@ -1898,7 +1901,7 @@ export default function AnalysisPage() {
                                                     color: m.role === "user" ? ct.primary : "var(--color-text-primary)",
                                                 }}>
                                                     <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
-                                                    {m.chart && (
+                                                    {m.chart && m.chart.type && m.chart.chart_data && (
                                                         <div style={{ marginTop: "12px", height: "260px", width: "100%", background: "var(--color-background)", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--color-border)" }}>
                                                             <DynamicChartRenderer chart={m.chart} theme={ct} />
                                                         </div>

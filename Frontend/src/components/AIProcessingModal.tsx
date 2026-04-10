@@ -1,14 +1,18 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
 
+import Papa from "papaparse";
+import * as XLSX from "xlsx";
+
 /* ─── Types ─── */
 type Stage = "processing" | "recommendation" | "override" | "training" | "model_selection";
 type ModelType = "supervised" | "unsupervised" | "timeseries";
 
 interface Props {
-    fileName: string;
+    file: File | null;
     onClose: () => void;
-    onGenerate: (config: { modelType: ModelType; targetLabel: string }) => void;
+    onGenerate: (config: { modelType: ModelType; targetLabel: string }) => Promise<any>;
+    onComplete?: (dashboardId: string) => void;
 }
 
 /* ─── Fake column names for the label dropdown ─── */
@@ -66,7 +70,8 @@ const TRAINING_MESSAGES = [
     "Computing accuracy scores...",
 ];
 
-export default function AIProcessingModal({ fileName, onClose, onGenerate }: Props) {
+export default function AIProcessingModal({ file, onClose, onGenerate, onComplete }: Props) {
+    const fileName = file?.name || "dataset.csv";
     const [stage, setStage] = useState<Stage>("processing");
     const [checkedCount, setCheckedCount] = useState(0);
     const [headerIdx, setHeaderIdx] = useState(0);
@@ -79,12 +84,51 @@ export default function AIProcessingModal({ fileName, onClose, onGenerate }: Pro
     const [progress, setProgress] = useState(0);
     const dropdownRef = useRef<HTMLDivElement>(null);
 
+    const [fileColumns, setFileColumns] = useState<string[]>([]);
+
+    useEffect(() => {
+        if (!file) return;
+
+        const parseCSV = (f: File) => {
+            Papa.parse(f, {
+                header: true,
+                preview: 1, // We only need the first row to determine headers
+                complete: (results) => {
+                    if (results.meta && results.meta.fields) {
+                        setFileColumns(results.meta.fields);
+                    }
+                }
+            });
+        };
+
+        const parseExcel = async (f: File) => {
+            try {
+                const arrayBuffer = await f.arrayBuffer();
+                const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+                if (json.length > 0) {
+                    setFileColumns(json[0] as string[]);
+                }
+            } catch (error) {
+                console.error("Failed to parse Excel file", error);
+            }
+        };
+
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        if (ext === 'csv') parseCSV(file);
+        else if (ext === 'xlsx' || ext === 'xls') parseExcel(file);
+    }, [file]);
+
     /* ─── Training state ─── */
-    const [trainedModels, setTrainedModels] = useState<TrainedModel[]>(SUPERVISED_MODELS.map(m => ({ ...m })));
+    const [trainedModels, setTrainedModels] = useState<any[]>(SUPERVISED_MODELS.map(m => ({ ...m })));
     const [trainingIdx, setTrainingIdx] = useState(0);
     const [trainingProgress, setTrainingProgress] = useState(0);
     const [trainingMsg, setTrainingMsg] = useState(TRAINING_MESSAGES[0]);
+    const [trainingError, setTrainingError] = useState<string | null>(null);
     const [selectedModel, setSelectedModel] = useState<string>("");
+    const [dashboardId, setDashboardId] = useState<string>("");
 
     /* ── Tick checkboxes one-by-one ── */
     useEffect(() => {
@@ -127,16 +171,13 @@ export default function AIProcessingModal({ fileName, onClose, onGenerate }: Pro
     useEffect(() => {
         if (stage !== "training") return;
 
-        // Reset training state
-        const targetModels = modelType === "unsupervised" ? UNSUPERVISED_MODELS : SUPERVISED_MODELS;
         setTrainingIdx(0);
         setTrainingProgress(0);
-        setTrainedModels(targetModels.map(m => ({ ...m, status: "pending" })));
         setTrainingMsg(TRAINING_MESSAGES[0]);
+        setTrainingError(null);
 
-        let currentIdx = 0;
-        let progressVal = 0;
         let msgIdx = 0;
+        let progressVal = 0;
 
         // Message cycling
         const msgTimer = setInterval(() => {
@@ -144,42 +185,12 @@ export default function AIProcessingModal({ fileName, onClose, onGenerate }: Pro
             setTrainingMsg(TRAINING_MESSAGES[msgIdx]);
         }, 1400);
 
-        // Progress + model training simulation
+        // Progress simulation up to ~95% maximum until actual API resolves
         const timer = setInterval(() => {
-            progressVal += 2;
-            setTrainingProgress(Math.min(progressVal, 100));
-
-            // Train models one by one
-            if (progressVal >= 20 && currentIdx === 0) {
-                setTrainedModels(prev => prev.map((m, i) => i === 0 ? { ...m, status: "training" } : m));
-            }
-            if (progressVal >= 35 && currentIdx === 0) {
-                currentIdx = 1;
-                setTrainingIdx(1);
-                setTrainedModels(prev => prev.map((m, i) => i === 0 ? { ...m, status: "done" } : i === 1 ? { ...m, status: "training" } : m));
-            }
-            if (progressVal >= 55 && currentIdx === 1) {
-                currentIdx = 2;
-                setTrainingIdx(2);
-                setTrainedModels(prev => prev.map((m, i) => i === 1 ? { ...m, status: "done" } : i === 2 ? { ...m, status: "training" } : m));
-            }
-            if (progressVal >= 80 && currentIdx === 2) {
-                currentIdx = 3;
-                setTrainingIdx(3);
-                setTrainedModels(prev => prev.map(m => ({ ...m, status: "done" })));
-            }
-
-            if (progressVal >= 100) {
-                clearInterval(timer);
-                clearInterval(msgTimer);
-                setTimeout(() => {
-                    // Auto-select best model
-                    const best = targetModels.reduce((a, b) => a.accuracy > b.accuracy ? a : b);
-                    setSelectedModel(best.name);
-                    setStage("model_selection");
-                }, 800);
-            }
-        }, 120);
+            progressVal += 1.5;
+            if (progressVal > 95) progressVal = 95;
+            setTrainingProgress(progressVal);
+        }, 150);
 
         return () => {
             clearInterval(timer);
@@ -187,15 +198,45 @@ export default function AIProcessingModal({ fileName, onClose, onGenerate }: Pro
         };
     }, [stage]);
 
-    const handleTrainModel = () => {
+    const handleTrainModel = async () => {
         if (modelType === "supervised" || modelType === "unsupervised") {
             setStage("training");
+            try {
+                // Execute backend upload + ML synchronously in the background!
+                const res = await onGenerate({ modelType, targetLabel });
+                if (res && res.ml_results) {
+                    setDashboardId(res.dashboard_id);
+                    const actualModels = res.ml_results.map((r: any) => ({
+                        name: r.model_name,
+                        icon: r.model_name.toLowerCase().includes('xgboost') ? '⚡' : r.model_name.toLowerCase().includes('forest') ? '🌲' : '🧠',
+                        accuracy: r.accuracy,
+                        color: r.is_best ? "#3ECF8E" : "#8B5CF6",
+                        status: "done",
+                        isBest: r.is_best
+                    }));
+                    
+                    if (!actualModels || actualModels.length === 0) {
+                        // Set an error state in the UI instead of crashing
+                        setTrainingError("Model training failed. Please check your target column and dataset.");
+                        setTrainingProgress(0);
+                        return;
+                    }
+                    
+                    setTrainedModels(actualModels);
+                    setSelectedModel(actualModels.find((m: any) => m.isBest)?.name || actualModels[0]?.name || "");
+                    setTrainingProgress(100);
+                    setStage("model_selection");
+                }
+            } catch (err) {
+                console.error("Training failed", err);
+                setStage("recommendation");
+            }
         } else {
             // For timeseries, go directly to dashboard
             setToastVisible(true);
-            setTimeout(() => {
-                onGenerate({ modelType, targetLabel });
-                onClose();
+            setTimeout(async () => {
+                const res = await onGenerate({ modelType, targetLabel });
+                if (res && onComplete) onComplete(res.dashboard_id);
             }, 1800);
         }
     };
@@ -203,13 +244,17 @@ export default function AIProcessingModal({ fileName, onClose, onGenerate }: Pro
     const handleGenerate = () => {
         setToastVisible(true);
         setTimeout(() => {
-            onGenerate({ modelType, targetLabel });
-            onClose();
+            if (onComplete && dashboardId) {
+                onComplete(dashboardId);
+            } else {
+                onClose();
+            }
         }, 1800);
     };
 
-    const filteredColumns = FAKE_COLUMNS.filter((c) =>
-        c.toLowerCase().includes(labelSearch.toLowerCase())
+    const targetColumnsArray = fileColumns.length > 0 ? fileColumns : FAKE_COLUMNS;
+    const filteredColumns = targetColumnsArray.filter((c) =>
+        c && c.toString().toLowerCase().includes(labelSearch.toLowerCase())
     );
 
     /* ── Step indicator at top ── */
@@ -637,7 +682,7 @@ export default function AIProcessingModal({ fileName, onClose, onGenerate }: Pro
                                     Training Models...
                                 </div>
                                 <div style={{ fontSize: "0.8rem", color: "var(--color-text-muted)", textAlign: "center" }}>
-                                    {trainingMsg}
+                                    {trainingError ? <span style={{color: "#F87171", fontWeight: 600}}>{trainingError}</span> : trainingMsg}
                                 </div>
                             </div>
 
@@ -651,67 +696,40 @@ export default function AIProcessingModal({ fileName, onClose, onGenerate }: Pro
                                 }} />
                             </div>
 
-                            {/* Model training cards */}
+                            {/* Generic Loading State */}
                             <div style={{
                                 background: "rgba(0,0,0,0.2)",
                                 border: "1px solid var(--color-border)",
-                                borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "12px",
+                                borderRadius: "12px", padding: "30px", 
+                                display: "flex", flexDirection: "column", gap: "12px",
+                                alignItems: "center", textAlign: "center",
+                                color: "var(--color-text-secondary)"
                             }}>
-                                {trainedModels.map((model, i) => (
-                                    <div key={model.name} style={{
-                                        display: "flex", alignItems: "center", gap: "14px",
-                                        padding: "14px 16px", borderRadius: "10px",
-                                        background: model.status === "training" ? "rgba(0,209,255,0.06)" : model.status === "done" ? "rgba(62,207,142,0.04)" : "var(--color-subtle)",
-                                        border: model.status === "training" ? "1px solid rgba(0,209,255,0.25)" : model.status === "done" ? "1px solid rgba(62,207,142,0.2)" : "1px solid var(--color-border)",
-                                        transition: "all 0.4s",
-                                        opacity: model.status === "pending" ? 0.4 : 1,
-                                    }}>
-                                        <div style={{
-                                            width: "40px", height: "40px", borderRadius: "10px", flexShrink: 0,
-                                            background: `${model.color}15`,
-                                            border: `1px solid ${model.color}30`,
-                                            display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.2rem",
-                                        }}>
-                                            {model.icon}
-                                        </div>
-                                        <div style={{ flex: 1 }}>
-                                            <div style={{ fontSize: "0.88rem", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "2px" }}>
-                                                {model.name}
-                                            </div>
-                                            <div style={{ fontSize: "0.72rem", color: model.status === "training" ? "#00D1FF" : model.status === "done" ? "#3ECF8E" : "var(--color-text-muted)" }}>
-                                                {model.status === "pending" ? "Waiting..." : model.status === "training" ? "Training in progress..." : `Accuracy: ${model.accuracy}%`}
-                                            </div>
-                                        </div>
-                                        <div style={{ flexShrink: 0 }}>
-                                            {model.status === "pending" && (
-                                                <div style={{ width: "20px", height: "20px", borderRadius: "50%", border: "1px solid var(--color-border)" }} />
-                                            )}
-                                            {model.status === "training" && (
-                                                <div style={{
-                                                    width: "20px", height: "20px", borderRadius: "50%",
-                                                    border: "2px solid rgba(0,209,255,0.15)",
-                                                    borderTop: "2px solid #00D1FF",
-                                                    animation: "spin 0.8s linear infinite",
-                                                }} />
-                                            )}
-                                            {model.status === "done" && (
-                                                <div style={{
-                                                    width: "20px", height: "20px", borderRadius: "50%",
-                                                    background: "linear-gradient(135deg,#3ECF8E,#00D1FF)",
-                                                    display: "flex", alignItems: "center", justifyContent: "center",
-                                                    boxShadow: "0 0 8px rgba(62,207,142,0.3)",
-                                                }}>
-                                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                ))}
+                                <div style={{ fontSize: "0.95rem", fontWeight: 500, color: "var(--color-text-primary)" }}>
+                                    Evaluating multiple algorithms...
+                                </div>
+                                <div style={{ fontSize: "0.8rem", maxWidth: "250px", lineHeight: 1.5 }}>
+                                    This may take a minute depending on dataset size and feature complexity.
+                                </div>
                             </div>
-
+                            
                             <div style={{ textAlign: "center", marginTop: "16px", fontSize: "0.75rem", color: "var(--color-text-muted)" }}>
-                                Training {trainingIdx < 3 ? `${trainingIdx + 1}` : "3"} of 3 models...
+                                {trainingError ? "Ready to recalibrate" : "Waiting for ML Engine response..."}
                             </div>
+                            
+                            {trainingError && (
+                                <button
+                                    onClick={() => setStage("recommendation")}
+                                    style={{
+                                        width: "100%", padding: "10px", borderRadius: "10px",
+                                        border: "1px solid #F87171", background: "rgba(248, 113, 113, 0.1)",
+                                        color: "#F87171", fontSize: "0.85rem", cursor: "pointer", 
+                                        marginTop: "16px"
+                                    }}
+                                >
+                                    ← Try Again
+                                </button>
+                            )}
                         </div>
                     )}
 
@@ -735,7 +753,7 @@ export default function AIProcessingModal({ fileName, onClose, onGenerate }: Pro
                                 <div style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>
                                     Training Complete!
                                 </div>
-                                <div style={{ fontSize: "0.8rem", color: "#3ECF8E", fontWeight: 500 }}>All 3 models trained successfully ✓</div>
+                                <div style={{ fontSize: "0.8rem", color: "#3ECF8E", fontWeight: 500 }}>All {trainedModels.length} models trained successfully ✓</div>
                             </div>
 
                             {/* Best model badge */}

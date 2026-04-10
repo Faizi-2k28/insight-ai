@@ -31,6 +31,8 @@ class QueryResponse(BaseModel):
     row_count: int = 0
     error: Optional[str] = None
     chart_suggestion: Optional[Dict[str, Any]] = None
+    intent: Optional[str] = None
+    text_response: Optional[str] = None
 
 @router.post("/ask/{dashboard_id}", response_model=QueryResponse)
 def ask_question(
@@ -67,6 +69,8 @@ def ask_question(
     columns = []
     rows = []
     chart_suggestion = None
+    intent_type = None
+    text_response = None
 
     try:
         # 2. Get Schema Metadata
@@ -76,15 +80,20 @@ def ask_question(
         profile = DataProfilingService.profile_dataset(df)
         schema_info = profile.get("basic_info", {})
         schema_info["columns"] = profile.get("columns", [])
+        # 'total_rows' is the key used by DataProfilingService; expose as 'row_count' for llm_service
+        schema_info["row_count"] = schema_info.get("total_rows", len(records))
+
 
         # 3. Delegate to QueryService
         qr = QueryService.process_question(request.question, records, schema_info)
         dsl_data = qr["dsl"]
         generated_sql = qr["generated_sql"]
-        columns = qr["columns"]
-        rows = qr["rows"]
-        chart_suggestion = qr["chart_suggestion"]
-        error_msg = qr["error"]
+        columns = qr.get("columns", [])
+        rows = qr.get("rows", [])
+        chart_suggestion = qr.get("chart_suggestion")
+        error_msg = qr.get("error")
+        intent_type = qr.get("intent")
+        text_response = qr.get("text_response")
 
     except Exception as e:
         error_msg = str(e)
@@ -125,8 +134,10 @@ def ask_question(
         generated_sql=generated_sql,
         columns=columns,
         rows=rows,
-        row_count=len(rows),
-        chart_suggestion=chart_suggestion
+        row_count=len(rows) if rows else 0,
+        chart_suggestion=chart_suggestion,
+        intent=intent_type,
+        text_response=text_response
     )
 
 class QueryHistoryItem(BaseModel):

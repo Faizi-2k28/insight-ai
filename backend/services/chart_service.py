@@ -70,8 +70,22 @@ class ChartService:
         candidates = []
         
         columns = profile["columns"]
-        numeric_cols = [c["name"] for c in columns if c["column_type"] == "numeric"]
-        categorical_cols = [c["name"] for c in columns if c["column_type"] == "categorical"]
+        
+        # Heuristic 1: Ignore IDs
+        numeric_cols = []
+        for c in columns:
+            if c["column_type"] == "numeric":
+                name_lower = c["name"].lower()
+                if "id" not in name_lower and "index" not in name_lower:
+                    numeric_cols.append(c["name"])
+        
+        # Heuristic 2: Zero Variance
+        categorical_cols = []
+        for c in columns:
+            if c["column_type"] == "categorical":
+                if c.get("unique_count", 0) > 1:
+                    categorical_cols.append(c["name"])
+                    
         datetime_cols = [c["name"] for c in columns if c["column_type"] == "datetime"]
         
         # 1. Univariate - Numeric (Histogram/Box)
@@ -143,7 +157,7 @@ class ChartService:
             
             for cat in top_cats:
                 cat_profile = next((c for c in columns if c["name"] == cat), None)
-                if cat_profile and cat_profile.get("unique_count", 100) > 50:
+                if not cat_profile or cat_profile.get("unique_count", 100) > 50:
                     continue # Skip high cardinality
                     
                 for num in numeric_cols[:3]:
@@ -250,23 +264,35 @@ class ChartService:
         
         final_list = []
         seen_types = {} # type -> count
-        seen_cols = set() # Avoid repetitive charts on same column
-        
+        seen_cols = set() # Avoid repetitive charts on same general column
+        seen_x_axis = {} # c_type -> list of categorical x_axis used
+
         for chart in sorted_candidates:
             c_type = chart["type"]
-            
-            # Identify primary column to check for repetition
             config = chart["config"]
-            primary_col = config.get("column") or config.get("y_column") or config.get("numeric_column")
+            
+            # Heuristic 3: Deduplication
+            x_col = config.get("categorical_column") or config.get("by_column") or config.get("x_column") or config.get("column")
+            if x_col:
+                if c_type not in seen_x_axis:
+                    seen_x_axis[c_type] = []
+                # If we've already grouped by this X-axis twice for this chart type, skip
+                if seen_x_axis[c_type].count(x_col) >= 2:
+                    continue
+                    
+            # Identify primary column to check for repetition
+            primary_col = config.get("y_column") or config.get("numeric_column") or config.get("column")
             col_key = f"{c_type}_{primary_col}"
             
             # Diversity constraints
-            if seen_types.get(c_type, 0) >= 2: continue # Max 2 of same type
+            if seen_types.get(c_type, 0) >= 3: continue  # Max 3 of same type (allows full 7-chart grid)
             if col_key in seen_cols: continue # Don't repeat same view
             
             final_list.append(chart)
             seen_types[c_type] = seen_types.get(c_type, 0) + 1
             seen_cols.add(col_key)
+            if x_col:
+                seen_x_axis[c_type].append(x_col)
             
             if limit and len(final_list) >= limit: break
             
@@ -424,8 +450,10 @@ class ChartService:
         
         data = [
             {
-                "name": str(k),
-                "value": float(v)
+                cat_col: str(k),     # actual column name — matches renderer dataKey
+                num_col: float(v),   # actual column name — matches renderer dataKey
+                "name": str(k),      # fallback alias
+                "value": float(v),   # fallback alias
             }
             for k, v in grouped.items()
         ]

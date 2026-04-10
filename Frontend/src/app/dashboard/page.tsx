@@ -224,6 +224,7 @@ export default function DashboardPage() {
     const [projects, setProjects] = useState<Project[]>([]);
     const [uploadFile, setUploadFile] = useState<File | null>(null);
     const [isLoading, setIsLoading] = useState(true);
+    const [dashboardStats, setDashboardStats] = useState({ total_datasets: 0, models_trained: 0, ready_reports: 0, processing: 0 });
 
     const loadDashboards = useCallback(async () => {
         setIsLoading(true);
@@ -236,10 +237,18 @@ export default function DashboardPage() {
                 model: d.problem_type === 'regression' ? 'Regression' : 'Classification',
                 status: "Analysis Ready",
                 rows: d.row_count,
-                edited: new Date(d.created_at).toLocaleDateString(),
+                edited: new Date(d.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
                 starred: false
             }));
             setProjects(mappedProjects);
+            
+            try {
+                const liveStats = await dashboardService.getStats();
+                setDashboardStats(liveStats);
+            } catch (statsErr) {
+                console.error("Failed to fetch live stats", statsErr);
+            }
+            
         } catch (error) {
             console.error("Failed to load dashboards", error);
         } finally {
@@ -311,7 +320,18 @@ export default function DashboardPage() {
     const hour = new Date().getHours();
     const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
-    const handleDelete = (id: string) => setProjects((prev) => prev.filter((p) => p.id !== id));
+    const handleDelete = async (id: string) => {
+        try {
+            await dashboardService.deleteDashboard(id);
+            setProjects((prev) => prev.filter((p) => p.id !== id));
+            // Refresh stats locally without reloading full fetch payload!
+            const newStats = await dashboardService.getStats();
+            setDashboardStats(newStats);
+        } catch (error) {
+            console.error("Failed to delete dataset", error);
+            alert("Failed to delete dataset. Please try again.");
+        }
+    };
     const handleRename = (id: string) => {
         setProjects((prev) => prev.map((p) => p.id === id ? { ...p, name: renameVal || p.name } : p));
         setRenameId(null);
@@ -435,10 +455,10 @@ export default function DashboardPage() {
                     {/* Stats bar */}
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "12px", marginBottom: "28px" }} className="stats-grid">
                         {[
-                            { label: "Total Datasets", val: projects.length.toString(), icon: "📁", color: "#00D1FF" },
-                            { label: "Models Trained", val: projects.filter(p => p.status === "Model Trained").length.toString(), icon: "🤖", color: "#8B5CF6" },
-                            { label: "Ready Reports", val: projects.filter(p => p.status === "Analysis Ready").length.toString(), icon: "📊", color: "#3ECF8E" },
-                            { label: "Processing", val: projects.filter(p => p.status === "Processing" || p.status === "Queued").length.toString(), icon: "⚡", color: "#F97316" },
+                            { label: "Total Datasets", val: dashboardStats.total_datasets.toString(), icon: "📁", color: "#00D1FF" },
+                            { label: "Models Trained", val: dashboardStats.models_trained.toString(), icon: "🤖", color: "#8B5CF6" },
+                            { label: "Ready Reports", val: dashboardStats.ready_reports.toString(), icon: "📊", color: "#3ECF8E" },
+                            { label: "Processing", val: dashboardStats.processing.toString(), icon: "⚡", color: "#F97316" },
                         ].map((s) => (
                             <div key={s.label} style={{ background: "var(--color-glass)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "16px", display: "flex", alignItems: "center", gap: "12px", backdropFilter: "blur(10px)" }}>
                                 <div style={{ fontSize: "1.4rem", flexShrink: 0 }}>{s.icon}</div>
@@ -657,25 +677,32 @@ export default function DashboardPage() {
             {/* ── AI Processing Modal ── */}
             {showAnalysis && (
                 <AIProcessingModal
-                    fileName={analysisFile}
+                    file={uploadFile}
                     onClose={() => setShowAnalysis(false)}
                     onGenerate={async ({ modelType, targetLabel }) => {
-                        setShowAnalysis(false);
-                        if (!uploadFile) return;
+                        if (!uploadFile) return null;
                         try {
                             const problemType = (modelType === 'timeseries' || modelType === 'supervised') ? 'regression' : 'classification';
+                            const finalTarget = (targetLabel === "No Target Label" || !targetLabel) ? "" : targetLabel;
+                            
                             const response = await uploadService.createDashboard(
                                 uploadFile,
                                 uploadFile.name.replace(/\.[^/.]+$/, ""),
-                                targetLabel || "auto",
+                                finalTarget,
                                 problemType,
                                 ""
                             );
-                            router.push(`/analysis?id=${response.dashboard_id}`);
+                            // Do not close or navigate here! Return the payload to the modal for Stage E.
+                            return response;
                         } catch (error: any) {
                             console.error("Upload failed:", error);
                             alert(error.message || "Failed to create dashboard");
+                            throw error;
                         }
+                    }}
+                    onComplete={(dashboard_id: string) => {
+                        setShowAnalysis(false);
+                        router.push(`/analysis?id=${dashboard_id}`);
                     }}
                 />
             )}

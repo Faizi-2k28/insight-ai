@@ -34,53 +34,50 @@ class LLMService:
         if api_key:
             try:
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-2.5-flash')
+                model = genai.GenerativeModel('gemini-2.0-flash')  # 1500 req/day free tier
 
-                columns = [
-                    f"{col['name']} ({col['column_type']})" 
-                    for col in columns_info
-                ]
-                
+                # Build rich context for the prompt
+                row_count = schema_info.get("row_count", schema_info.get("total_rows", "unknown"))
+                num_stats = ""
+                cat_samples = ""
+                for col in columns_info:
+                    if col.get("column_type") == "numeric":
+                        stats = col.get("stats", {})
+                        if stats:
+                            num_stats += f"  {col['name']}: min={stats.get('min','?')}, max={stats.get('max','?')}, mean={stats.get('mean','?'):.2f}\n" if isinstance(stats.get('mean'), float) else f"  {col['name']}: min={stats.get('min','?')}, max={stats.get('max','?')}\n"
+                    elif col.get("column_type") == "categorical":
+                        samples = col.get("top_values", col.get("sample_values", []))
+                        if samples:
+                            cat_samples += f"  {col['name']}: {', '.join(str(s) for s in samples[:5])}\n"
+
                 prompt = f"""
-            You are a smart data assistant capable of general conversation and data analysis.
-            
-            Dataset Schema:
-            Columns: {', '.join(columns)}
-            
-            Supported Data Operations:
-            - Select columns
-            - Filter (==, !=, <, >, <=, >=, in, between, like)
-            - Group By
-            - Aggregations (sum, mean, count, min, max, median)
-            - Sort
-            - Limit (default 100, max 200)
+You are an intelligent data analyst AI assistant. You can answer conversational questions about the dataset AND perform structured data queries.
 
-            User Question: "{question}"
+Dataset Context:
+- Total rows: {row_count}
+- Columns: {', '.join(columns)}
 
-            Output Constraints:
-            1. Return ONLY a valid JSON object.
-            2. If the user asks a general question (e.g., "summarize this", "hello", "what is this data?"), return:
-               {{
-                 "intent": "conversational",
-                 "text_response": "<your conversational, helpful answer>"
-               }}
-            3. If the user asks a specific data question requiring a query (e.g., "top 5 regions", "average price"), return:
-               {{
-                 "intent": "data_query",
-                 "text_response": "<brief explanation of the data we are pulling>",
-                 "dsl": {{
-                     "select": ["col1", "col2"],
-                     "filters": [{{"column": "col1", "operator": ">", "value": 10}}],
-                     "groupby": ["col2"],
-                     "aggregations": [{{"column": "col3", "function": "sum", "alias": "total_col3"}}],
-                     "sort": [{{"column": "total_col3", "descending": true}}],
-                     "limit": 5
-                 }}
-               }}
-            4. Do NOT use columns that don't exist in the schema for data queries.
-            
-            Return JSON:
-            """
+Numeric Column Statistics:
+{num_stats if num_stats else '  (no numeric columns)'}
+
+Categorical Column Sample Values:
+{cat_samples if cat_samples else '  (no categorical columns)'}
+
+Supported Data Operations: select, filter (==, !=, <, >, <=, >=, in, between, like), groupby, aggregations (sum, mean, count, min, max), sort, limit.
+
+User Question: "{question}"
+
+Output Rules:
+1. Return ONLY valid JSON.
+2. For conversational/analytical questions (e.g., "tell me about the dataset", "summarize", "what does this data contain?", "how many rows?", "what are the columns?"), return:
+   {{"intent": "conversational", "text_response": "<your insightful, specific answer using the actual dataset facts above>"}}
+3. For specific data retrieval questions (e.g., "top 5 regions by revenue", "average price by category"), return:
+   {{"intent": "data_query", "text_response": "<brief description>", "dsl": {{"select": [...], "groupby": [...], "aggregations": [...], "sort": [...], "limit": 10}}}}
+4. Only use columns that exist in the schema.
+5. For conversational intents, DO NOT include a 'dsl' key.
+
+Return JSON:
+"""
 
                 response = model.generate_content(prompt)
                 text = response.text.strip()
@@ -108,20 +105,85 @@ class LLMService:
                 return data
 
             except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "ResourceExhausted" in err_str or "quota" in err_str.lower():
+                    logger.warning("Gemini quota exhausted for query DSL generation.")
+                    return {
+                        "intent": "conversational",
+                        "text_response": "⚠️ The AI assistant has hit its daily request quota. Keyword-based queries still work — try asking: \"top 10 rows\", \"average sales by region\", etc. The quota resets every 24 hours."
+                    }
                 logger.warning(f"Gemini DSL generation failed: {e}. Falling back to keyword parser.")
         
-        # --- Keyword-based fallback ---
+        # --- Keyword-based fallback (only when Gemini is unavailable) ---
+        
+        q_lower = question.lower().strip()
+        
+        # Smart conversational handlers that use schema_info directly
+        conversational_triggers = [
+            "about", "tell me", "describe", "what is", "what are", "summarize",
+            "summary", "overview", "explain", "who", "help", "can you", "dataset",
+            "columns", "how many rows", "how many col", "what data", "what kind",
+            "recommendation", "suggest", "clean", "improve", "visuali"
+        ]
+        if any(trigger in q_lower for trigger in conversational_triggers):
+            row_count = schema_info.get("row_count", schema_info.get("total_rows", "?"))
+            num_cols   = [c for c in columns_info if c.get("column_type") == "numeric"]
+            cat_cols   = [c for c in columns_info if c.get("column_type") == "categorical"]
+            dt_cols    = [c for c in columns_info if c.get("column_type") == "datetime"]
+
+            # Build a rich summary
+            parts = []
+            parts.append(f"This dataset contains **{row_count} rows** and **{len(column_names)} columns**.")
+
+            if cat_cols:
+                cat_names = ", ".join(c["name"] for c in cat_cols[:5])
+                parts.append(f"Categorical columns: {cat_names}.")
+            if num_cols:
+                num_names = ", ".join(c["name"] for c in num_cols[:5])
+                parts.append(f"Numeric columns: {num_names}.")
+            if dt_cols:
+                dt_names = ", ".join(c["name"] for c in dt_cols[:3])
+                parts.append(f"Date/time columns: {dt_names}.")
+
+            # Add a stat highlight for the first numeric column
+            if num_cols:
+                fc = num_cols[0]
+                stats = fc.get("stats", {})
+                if stats:
+                    fc_min = stats.get("min", "?"); fc_max = stats.get("max", "?"); fc_mean = stats.get("mean", "?")
+                    if isinstance(fc_mean, float): fc_mean = f"{fc_mean:.2f}"
+                    parts.append(f"For example, **{fc['name']}** ranges from {fc_min} to {fc_max} (avg: {fc_mean}).")
+
+            # Recommendation branch
+            if any(t in q_lower for t in ["recommendation", "suggest", "clean", "improve"]):
+                tips = []
+                for c in columns_info:
+                    null_pct = c.get("null_percentage", 0) or 0
+                    if null_pct > 5:
+                        tips.append(f"• **{c['name']}** has {null_pct:.1f}% missing values — consider imputation or removal.")
+                if not tips:
+                    tips.append("• No major data quality issues detected. Consider normalizing numeric columns before ML modelling.")
+                parts.append("**Recommendations:**\n" + "\n".join(tips))
+            else:
+                parts.append("You can ask me things like: *\"top 10 sales by region\"*, *\"average profit by category\"*, or *\"show rows where discount > 0.3\"*.")
+
+            return {
+                "intent": "conversational",
+                "text_response": "\n\n".join(parts)
+            }
+        
         fallback_dsl = LLMService._keyword_fallback_dsl(question, columns_info, column_names)
         if fallback_dsl:
             return {
                 "intent": "data_query",
-                "text_response": "I've pulled this data using basic keyword matching.",
+                "text_response": "Here is the data matching your query.",
                 "dsl": fallback_dsl
             }
         return {
             "intent": "conversational",
-            "text_response": "I had trouble understanding that query as a database request. How else can I help?"
+            "text_response": "I'm not sure how to answer that. Try: *\"tell me about the dataset\"*, *\"top 10 rows by sales\"*, or *\"average profit by region\"*."
         }
+
     
     @staticmethod
     def _keyword_fallback_dsl(
@@ -268,7 +330,7 @@ class LLMService:
 
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            model = genai.GenerativeModel('gemini-2.0-flash')  # 1500 req/day free tier
 
             # Prepare batch prompt
             chart_summaries = []

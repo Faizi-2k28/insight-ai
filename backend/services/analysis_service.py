@@ -1,8 +1,11 @@
 import pandas as pd
+import logging
 from typing import Optional, Dict, Any, List
 from services.data_profiling_service import DataProfilingService
 from services.chart_service import ChartService
 from services.insight_service import InsightService
+
+logger = logging.getLogger(__name__)
 
 class AnalysisService:
     @staticmethod
@@ -39,7 +42,14 @@ class AnalysisService:
                     "chart_data": chart_data
                 })
             except Exception as e:
-                # Optionally log error
+                logger.warning("Chart data generation failed for '%s' (%s): %s",
+                               config.get('title', '?'), config.get('type', '?'), str(e))
+                continue
+
+            # Skip charts whose data generation returned an error dict
+            if isinstance(chart_data, dict) and "error" in chart_data:
+                logger.warning("Chart data contains error for '%s': %s",
+                               config.get('title', '?'), chart_data['error'])
                 continue
 
         # 4. Generate AI Insights

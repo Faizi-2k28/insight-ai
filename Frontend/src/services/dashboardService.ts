@@ -20,12 +20,27 @@ export const dashboardService = {
     getDashboards: async (): Promise<{ dashboards: DashboardItem[] }> => {
         return apiFetch('/api/upload/dashboards', {
             method: 'GET',
+            cache: 'no-store'
         });
     },
     
     getDashboardById: async (id: string): Promise<DashboardItem> => {
         return apiFetch(`/api/upload/dashboard/${id}`, {
             method: 'GET',
+            cache: 'no-store'
+        });
+    },
+
+    deleteDashboard: async (id: string): Promise<{ success: boolean; message: string }> => {
+        return apiFetch(`/api/upload/dashboard/${id}`, {
+            method: 'DELETE',
+        });
+    },
+
+    getStats: async (): Promise<{ total_datasets: number; models_trained: number; ready_reports: number; processing: number }> => {
+        return apiFetch(`/api/upload/stats`, {
+            method: 'GET',
+            cache: 'no-store'
         });
     }
 };

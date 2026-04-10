@@ -18,7 +18,7 @@ db_sslmode = os.getenv("DB_SSLMODE")
 if db_sslmode and "sslmode=" not in DATABASE_URL:
     connect_args["sslmode"] = db_sslmode
 
-engine = create_engine(DATABASE_URL, echo=True, connect_args=connect_args)
+engine = create_engine(DATABASE_URL, echo=True, connect_args=connect_args, pool_pre_ping=True, pool_recycle=300)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():

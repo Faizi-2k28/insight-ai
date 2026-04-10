@@ -1,8 +1,10 @@
 # backend/routes/upload.py
+import os
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Form
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from database.connection import get_db
-from database.models import User, Dashboard, DatasetStorage
+from database.models import User, Dashboard, DatasetStorage, MLResult
 from routes.auth import get_current_active_user
 import pandas as pd
 import io
@@ -223,6 +225,11 @@ async def create_dashboard(
                 detail="Dataset must have at least 10 rows"
             )
         
+        # Fallback auto-detection for target column
+        if not target_column or target_column in ["No Target Label", "auto", ""]:
+            target_column = df.columns[-1]
+            logger.info("Auto-detected target column fallback: %s", target_column)
+
         if target_column not in df.columns:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -252,11 +259,63 @@ async def create_dashboard(
         
         db.commit()
         db.refresh(dashboard)
+
+        # Execute ML Pipeline Synchronously
+        import asyncio
+        from services.ml_service import MLService
+        
+        try:
+            training_output = await asyncio.to_thread(
+                MLService.train_and_evaluate,
+                df, dashboard.target_column, dashboard.problem_type
+            )
+        except Exception as e:
+            logger.error(f"ML Pipeline failed, but dashboard was created: {str(e)}")
+            training_output = {"results": []}
+
+        results_payload = []
+        best_score = -float('inf')
+        best_model_id = None
+        
+        for result in training_output["results"]:
+            ml_result = MLResult(
+                dashboard_id=dashboard.id,
+                model_name=result['model_name'],
+                model_type=result['model_type'],
+                test_score=result['test_score_db'],
+                cv_score=result['cv_score_db'],
+                training_time=result['training_time'],
+                feature_importance=result['feature_importance'],
+                hyperparameters=result['metrics'],
+                is_best_model=result['test_score'] > best_score
+            )
+            db.add(ml_result)
+            db.flush()
+            
+            if result['test_score'] > best_score:
+                best_score = result['test_score']
+                best_model_id = ml_result.id
+            
+            results_payload.append({
+                "model_name": ml_result.model_name,
+                "accuracy": round((ml_result.test_score or 0) * 100, 1),
+                "is_best": False
+            })
+
+        if best_model_id:
+            db.query(MLResult).filter(MLResult.dashboard_id == dashboard.id).update({"is_best_model": False})
+            db.query(MLResult).filter(MLResult.id == best_model_id).update({"is_best_model": True})
+            for rp in results_payload:
+                if rp["accuracy"] == round((best_score or 0) * 100, 1):
+                    rp["is_best"] = True
+
+        db.commit()
         
         return {
             "success": True,
             "dashboard_id": str(dashboard.id),
-            "message": "Dashboard created successfully"
+            "message": "Dashboard created successfully",
+            "ml_results": results_payload
         }
         
     except ValueError as e:
@@ -333,3 +392,82 @@ async def get_dashboard(
         "created_at": dashboard.created_at,
         "updated_at": dashboard.updated_at
     }
+
+
+@router.delete("/dashboard/{dashboard_id}")
+async def delete_dashboard(
+    dashboard_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a dashboard and its associated data"""
+    try:
+        dashboard = db.query(Dashboard).filter(
+            Dashboard.id == uuid.UUID(dashboard_id),
+            Dashboard.user_id == current_user.id
+        ).first()
+
+        if not dashboard:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Dashboard not found or you don't have permission"
+            )
+
+        # SQLAlchemy cascade delete will wipe out MLResult, Insight, DatasetStorage, etc.
+        db.delete(dashboard)
+        db.commit()
+
+        # Delete physical local JSON file if exists
+        try:
+            storage_path = "storage/datasets"
+            file_path = os.path.join(storage_path, f"{dashboard_id}.json")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            logger.warning(f"Failed to delete local dataset layout file {file_path} for dashboard {dashboard_id}: {e}")
+
+        return {"success": True, "message": "Dashboard deleted successfully"}
+        
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Dashboard ID format")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete dashboard: {str(e)}"
+        )
+
+
+@router.get("/stats")
+async def get_dashboard_stats(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get aggregated metrics for the current user's dashboards"""
+    try:
+        total_datasets = db.query(func.count(Dashboard.id)).filter(
+            Dashboard.user_id == current_user.id
+        ).scalar() or 0
+
+        # Subquery to check if a dashboard has ML trained
+        models_trained = db.query(func.count(func.distinct(MLResult.dashboard_id))).join(
+            Dashboard, Dashboard.id == MLResult.dashboard_id
+        ).filter(
+            Dashboard.user_id == current_user.id
+        ).scalar() or 0
+
+        return {
+            "total_datasets": total_datasets,
+            "models_trained": models_trained,
+            "ready_reports": total_datasets,  # Assuming all successful uploads are "ready reports"
+            "processing": 0  # Dummy for now 
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to fetch stats: {e}")
+        return {
+            "total_datasets": 0,
+            "models_trained": 0,
+            "ready_reports": 0,
+            "processing": 0
+        }

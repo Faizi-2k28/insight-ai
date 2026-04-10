@@ -49,7 +49,7 @@ class InsightService:
             context = InsightService._prepare_context(profile, ml_results, dashboard_info)
             
             # Try Gemini first
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            model = genai.GenerativeModel('gemini-2.0-flash')  # 1500 req/day free tier
             
             prompt = f"""You are an expert data scientist analyzing a dataset. Generate actionable insights.
 
@@ -121,7 +121,7 @@ Return ONLY a JSON array of insight objects, no other text."""
         model = None
         
         try:
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            model = genai.GenerativeModel('gemini-2.0-flash')  # 1500 req/day free tier
         except Exception as e:
             print(f"Gemini model init failed: {str(e)}")
             gemini_available = False

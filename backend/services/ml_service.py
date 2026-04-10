@@ -394,46 +394,57 @@ class MLService:
         Returns a dict with 'results' list, 'best_result', and 'detected_type'.
         Raises ValueError on preparation failures.
         """
-        # 1. Prepare data
-        prep = MLService.prepare_data(df, target_column, problem_type)
-        if not prep["success"]:
-            raise ValueError(prep["error"])
+        try:
+            # 1. Prepare data
+            prep = MLService.prepare_data(df, target_column, problem_type)
+            if not prep["success"]:
+                raise ValueError(prep["error"])
 
-        X_train = prep["X_train"]
-        X_test = prep["X_test"]
-        y_train = prep["y_train"]
-        y_test = prep["y_test"]
-        feature_names = prep["feature_names"]
+            X_train = prep["X_train"]
+            X_test = prep["X_test"]
+            y_train = prep["y_train"]
+            y_test = prep["y_test"]
+            feature_names = prep["feature_names"]
 
-        # 2. Select models
-        models = MLService.select_best_models(
-            n_samples=len(X_train),
-            n_features=X_train.shape[1],
-            problem_type=problem_type
-        )
-
-        # 3. Train each model
-        results = []
-        for model_name, model in models:
-            result = MLService.train_single_model(
-                model_name, model,
-                X_train, X_test,
-                y_train, y_test,
-                feature_names, problem_type
+            # 2. Select models
+            models = MLService.select_best_models(
+                n_samples=len(X_train),
+                n_features=X_train.shape[1],
+                problem_type=problem_type
             )
-            if result:
-                result["test_score_db"] = MLService.sanitize_score(
-                    result["test_score"], problem_type, allow_null=False
-                )
-                result["cv_score_db"] = MLService.sanitize_score(
-                    result["cv_score"], problem_type, allow_null=True
-                )
-                results.append(result)
 
-        best_result = max(results, key=lambda x: x["test_score"]) if results else None
+            # 3. Train each model
+            results = []
+            for model_name, model in models:
+                result = MLService.train_single_model(
+                    model_name, model,
+                    X_train, X_test,
+                    y_train, y_test,
+                    feature_names, problem_type
+                )
+                if result:
+                    result["test_score_db"] = MLService.sanitize_score(
+                        result["test_score"], problem_type, allow_null=False
+                    )
+                    result["cv_score_db"] = MLService.sanitize_score(
+                        result["cv_score"], problem_type, allow_null=True
+                    )
+                    results.append(result)
 
-        return {
-            "results": results,
-            "best_result": best_result,
-            "detected_type": problem_type
-        }
+            best_result = max(results, key=lambda x: x["test_score"]) if results else None
+
+            return {
+                "results": results,
+                "best_result": best_result,
+                "detected_type": problem_type
+            }
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"ML Pipeline fatal error: {str(e)}")
+            return {
+                "results": [],
+                "best_result": None,
+                "detected_type": problem_type,
+                "error": str(e)
+            }
